@@ -12,7 +12,7 @@ Mutual TLS means both sides authenticate:
 All certificates are signed by a private Certificate Authority (CA) that you control.
 
 ```
-┌─────────────────┐          TLS          ┌─────────────────┐
+┌──────────────────┐          TLS          ┌──────────────────┐
 │  Host A          │  ◄──────────────────► │  Host B          │
 │  (Dagster daemon)│                       │  (Docker daemon) │
 │                  │                       │                  │
@@ -22,7 +22,7 @@ All certificates are signed by a private Certificate Authority (CA) that you con
 │  Verifies:       │                       │  Verifies:       │
 │   server cert    │                       │   client cert    │
 │   against ca.pem │                       │   against ca.pem │
-└─────────────────┘                        └─────────────────┘
+└──────────────────┘                       └──────────────────┘
 ```
 
 ## Prerequisites
