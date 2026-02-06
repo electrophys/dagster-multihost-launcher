@@ -9,7 +9,7 @@ A composite Dagster run launcher that routes runs to multiple Docker daemons acr
 │  Host A (control plane)                                      │
 │                                                              │
 │  ┌────────────┐  ┌──────────┐  ┌──────────┐                  │
-│  │ webserver  │  │  daemon   │  │ postgres │                 │
+│  │ webserver  │  │  daemon  │  │ postgres │                  │
 │  └────────────┘  └──────────┘  └──────────┘                  │
 │                       │              ▲                       │
 │                       │              │ (event storage)       │
