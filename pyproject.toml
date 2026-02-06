@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dagster-multihost-launcher"
+version = "0.1.0"
+description = "A composite Dagster run launcher that routes runs to multiple Docker daemons or the default launcher based on code location."
+license = "MIT"
+requires-python = ">=3.9"
+dependencies = [
+    "dagster>=1.6.0",
+    "dagster-docker>=0.22.0",
+    "docker>=7.0.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "dagster[test]",
+]
+
+[tool.setuptools.packages.find]
+include = ["dagster_multihost_launcher*"]

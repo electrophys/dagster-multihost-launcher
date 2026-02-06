@@ -1,0 +1,84 @@
+# docker-compose.yml — Host B (remote Docker worker)
+#
+# Runs code location gRPC servers. The dagster daemon on Host A
+# will create run containers on this host via the Docker TCP API.
+#
+# Prerequisites:
+#   - Docker daemon configured to listen on tcp://0.0.0.0:2376 with TLS
+#   - Port 2376 accessible from Host A
+#   - Ports 4001, 4002 accessible from Host A (for gRPC)
+#   - Postgres on Host A accessible from this host
+
+services:
+  etl_pipelines:
+    build:
+      context: .
+      dockerfile: Dockerfile_etl
+    container_name: etl_pipelines_code_server
+    entrypoint:
+      - dagster
+      - code-server
+      - start
+      - -h
+      - "0.0.0.0"
+      - -p
+      - "4001"
+      - -m
+      - etl_pipelines
+    environment:
+      # The image that DockerRunLauncher should use for runs
+      DAGSTER_CURRENT_IMAGE: "etl_pipelines:latest"
+      # Postgres connection (Host A's external IP, not a docker-compose name)
+      DAGSTER_POSTGRES_USER: dagster
+      DAGSTER_POSTGRES_PASSWORD: dagster_password
+      DAGSTER_POSTGRES_DB: dagster
+      DAGSTER_POSTGRES_HOST: "10.0.1.1"
+      DAGSTER_POSTGRES_PORT: "5432"
+    ports:
+      - "4001:4001"
+    networks:
+      - host_b_dagster_network
+
+  ml_training:
+    build:
+      context: .
+      dockerfile: Dockerfile_ml
+    container_name: ml_training_code_server
+    entrypoint:
+      - dagster
+      - code-server
+      - start
+      - -h
+      - "0.0.0.0"
+      - -p
+      - "4002"
+      - -m
+      - ml_training
+    environment:
+      DAGSTER_CURRENT_IMAGE: "ml_training:latest"
+      DAGSTER_POSTGRES_USER: dagster
+      DAGSTER_POSTGRES_PASSWORD: dagster_password
+      DAGSTER_POSTGRES_DB: dagster
+      DAGSTER_POSTGRES_HOST: "10.0.1.1"
+      DAGSTER_POSTGRES_PORT: "5432"
+    ports:
+      - "4002:4002"
+    networks:
+      - host_b_dagster_network
+
+networks:
+  host_b_dagster_network:
+    driver: bridge
+    # IMPORTANT: The run containers created by the launcher on Host A
+    # will be attached to this network. This lets them communicate with
+    # any services on this docker-compose stack if needed.
+    #
+    # The network name as seen by Docker will be:
+    #   <project_name>_host_b_dagster_network
+    # Make sure your dagster.yaml "network" config matches the full name,
+    # or use an external named network:
+    #
+    # networks:
+    #   host_b_dagster_network:
+    #     name: host_b_dagster_network   # explicit name, no prefix
+    #     driver: bridge

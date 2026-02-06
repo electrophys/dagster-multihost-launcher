@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Dagster
+.dagster_home/
+storage/
+schedules/
+history/
+
+# TLS certs (example files only, real certs should never be committed)
+certs/*.pem
+
+# Environment
+.env
+.env.*

@@ -1,0 +1,37 @@
+# workspace.yaml — Host A (control plane)
+#
+# Lists all code locations: local, remote-docker, and remote-non-docker.
+
+load_from:
+  # Admin code location — runs on Host A (DefaultRunLauncher)
+  # This is a local container in the same docker-compose
+  - grpc_server:
+      host: admin_code_location
+      port: 4000
+      location_name: "admin"
+
+  # Remote Docker code locations on Host B
+  # These gRPC servers are containers on Host B
+  - grpc_server:
+      host: 10.0.1.2    # Host B IP (or DNS name)
+      port: 4001
+      location_name: "etl_pipelines"
+
+  - grpc_server:
+      host: 10.0.1.2
+      port: 4002
+      location_name: "ml_training"
+
+  # Remote Docker code location on Host C
+  - grpc_server:
+      host: 10.0.1.3
+      port: 4001
+      location_name: "analytics"
+
+  # Remote NON-Docker code location (bare process on Host D)
+  # Runs will use DefaultRunLauncher (execute on Host A) since
+  # this location is not listed under any docker_hosts entry
+  - grpc_server:
+      host: 10.0.1.4
+      port: 4000
+      location_name: "reporting_service"

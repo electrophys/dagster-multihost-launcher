@@ -1,0 +1,73 @@
+# dagster.yaml — Host A (control plane)
+#
+# This runs on the host with the webserver, daemon, and postgres.
+
+scheduler:
+  module: dagster.core.scheduler
+  class: DagsterDaemonScheduler
+
+run_coordinator:
+  module: dagster.core.run_coordinator
+  class: QueuedRunCoordinator
+
+run_launcher:
+  module: dagster_multihost_launcher
+  class: MultiHostDockerRunLauncher
+  config:
+    # Env vars passed to ALL Docker run containers
+    default_env_vars:
+      - DAGSTER_POSTGRES_USER
+      - DAGSTER_POSTGRES_PASSWORD
+      - DAGSTER_POSTGRES_DB
+      - DAGSTER_POSTGRES_HOST
+      - DAGSTER_POSTGRES_PORT
+
+    # Default container kwargs applied to all Docker hosts
+    default_container_kwargs:
+      auto_remove: false
+
+    # Docker hosts and their code location mappings
+    docker_hosts:
+      # Host B: runs data pipeline code locations
+      - host_name: "host-b"
+        docker_url: "tcp://10.0.1.2:2376"
+        tls:
+          ca_cert: "/certs/ca.pem"
+          client_cert: "/certs/client-cert.pem"
+          client_key: "/certs/client-key.pem"
+          verify: true
+        location_names:
+          - "etl_pipelines"
+          - "ml_training"
+        network: "host_b_dagster_network"
+        env_vars:
+          - "WAREHOUSE_HOST=10.0.1.50"
+
+      # Host C: runs analytics code locations
+      - host_name: "host-c"
+        docker_url: "tcp://10.0.1.3:2376"
+        tls:
+          ca_cert: "/certs/ca.pem"
+          client_cert: "/certs/client-cert.pem"
+          client_key: "/certs/client-key.pem"
+          verify: true
+        location_names:
+          - "analytics"
+        network: "host_c_dagster_network"
+
+    # Any location NOT listed above (including "admin" and
+    # "reporting_service") will use the DefaultRunLauncher
+    # and run on Host A as a subprocess.
+
+storage:
+  postgres:
+    postgres_db:
+      username:
+        env: DAGSTER_POSTGRES_USER
+      password:
+        env: DAGSTER_POSTGRES_PASSWORD
+      hostname:
+        env: DAGSTER_POSTGRES_HOST
+      db_name:
+        env: DAGSTER_POSTGRES_DB
+      port: 5432
