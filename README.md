@@ -8,19 +8,19 @@ A composite Dagster run launcher that routes runs to multiple Docker daemons acr
 ┌──────────────────────────────────────────────────────────────┐
 │  Host A (control plane)                                      │
 │                                                              │
-│  ┌────────────┐  ┌──────────┐  ┌──────────┐                 │
+│  ┌────────────┐  ┌──────────┐  ┌──────────┐                  │
 │  │ webserver  │  │  daemon   │  │ postgres │                 │
-│  └────────────┘  └──────────┘  └──────────┘                 │
-│                       │              ▲                        │
-│                       │              │ (event storage)        │
-│  ┌──────────────────┐ │              │                        │
-│  │  admin code loc  │ │              │                        │
-│  │  (cleanup/status)│ │              │                        │
-│  └──────────────────┘ │              │                        │
-│                       │              │                        │
-└───────────────────────┼──────────────┼────────────────────────┘
+│  └────────────┘  └──────────┘  └──────────┘                  │
+│                       │              ▲                       │
+│                       │              │ (event storage)       │
+│  ┌──────────────────┐ │              │                       │
+│  │  admin code loc  │ │              │                       │
+│  │  (cleanup/status)│ │              │                       │
+│  └──────────────────┘ │              │                       │
+│                       │              │                       │
+└───────────────────────┼──────────────┼───────────────────────┘
                         │              │
-          ┌─────────────┼──────────────┼─────────────┐
+          ┌─────────────┼──────────────┼──────────────┐
           │             ▼              │              │
           │  Host B (Docker)           │              │
           │                            │              │
@@ -38,16 +38,16 @@ A composite Dagster run launcher that routes runs to multiple Docker daemons acr
           └───────────────────────────────────────────┘
 
           ┌───────────────────────────────────────────┐
-          │  Host D (non-Docker)                       │
-          │                                            │
-          │  ┌──────────────────┐                      │
-          │  │ code loc gRPC    │  (bare process)      │
-          │  │ (reporting)      │                      │
-          │  └──────────────────┘                      │
-          │                                            │
-          │  Runs execute on Host A via                 │
-          │  DefaultRunLauncher (subprocess)            │
-          └────────────────────────────────────────────┘
+          │  Host D (non-Docker)                      │
+          │                                           │
+          │  ┌──────────────────┐                     │
+          │  │ code loc gRPC    │  (bare process)     │
+          │  │ (reporting)      │                     │
+          │  └──────────────────┘                     │
+          │                                           │
+          │  Runs execute on Host A via               │
+          │  DefaultRunLauncher (subprocess)          │
+          └───────────────────────────────────────────┘
 ```
 
 ## How It Works
