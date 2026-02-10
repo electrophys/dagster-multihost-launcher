@@ -24,8 +24,9 @@ storage/
 schedules/
 history/
 
-# TLS certs (example files only, real certs should never be committed)
-certs/*.pem
+# TLS certs — never commit real certificates
+**/certs
+*.pem
 
 # Environment
 .env

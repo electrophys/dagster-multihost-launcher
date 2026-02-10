@@ -15,13 +15,16 @@ Or compose them into your own Definitions:
     from dagster_multihost_launcher import multihost_cleanup_asset, multihost_status_asset
     from dagster import Definitions, ScheduleDefinition, define_asset_job
 
-    cleanup_job = define_asset_job("cleanup_job", selection=[multihost_cleanup_asset])
-    cleanup_schedule = ScheduleDefinition(job=cleanup_job, cron_schedule="0 */6 * * *")
+    admin_job = define_asset_job(
+        "admin_job",
+        selection=[multihost_status_asset, multihost_cleanup_asset],
+    )
+    admin_schedule = ScheduleDefinition(job=admin_job, cron_schedule="*/5 * * * *")
 
     defs = Definitions(
-        assets=[multihost_cleanup_asset, multihost_status_asset],
-        jobs=[cleanup_job],
-        schedules=[cleanup_schedule],
+        assets=[multihost_status_asset, multihost_cleanup_asset],
+        jobs=[admin_job],
+        schedules=[admin_schedule],
     )
 """
 
@@ -107,10 +110,10 @@ def multihost_status_asset(context: AssetExecutionContext) -> MaterializeResult:
 
 @asset(
     key=AssetKey("multihost_container_cleanup"),
+    deps=[AssetKey("multihost_container_status")],
     description=(
         "Cleans up old exited Dagster-managed Docker containers across all "
-        "configured hosts. Removes containers that finished more than "
-        "24 hours ago by default."
+        "configured hosts. Runs after status check."
     ),
     group_name="admin",
     compute_kind="docker",
@@ -149,14 +152,14 @@ def multihost_cleanup_asset(context: AssetExecutionContext) -> MaterializeResult
 
 
 def build_admin_definitions(
-    cleanup_cron: str = "0 */6 * * *",
-    status_cron: str = "0 * * * *",
+    cron_schedule: str = "0 */6 * * *",
+    cleanup_max_age_hours: float = 24.0,
 ) -> Definitions:
     """Build a complete Definitions object for the admin code location.
 
     Args:
-        cleanup_cron: Cron schedule for container cleanup. Default: every 6 hours.
-        status_cron: Cron schedule for status checks. Default: every hour.
+        cron_schedule: Cron schedule for the admin job. Default: every 6 hours.
+        cleanup_max_age_hours: Max container age in hours before cleanup. Default: 24.
 
     Returns:
         A Definitions object you can use directly or merge with your own.
@@ -166,39 +169,25 @@ def build_admin_definitions(
         from dagster_multihost_launcher import build_admin_definitions
         defs = build_admin_definitions()
     """
-    cleanup_job = define_asset_job(
-        "multihost_cleanup_job",
-        selection=[multihost_cleanup_asset],
-        description="Remove old exited Docker containers across all hosts.",
-    )
-    status_job = define_asset_job(
-        "multihost_status_job",
-        selection=[multihost_status_asset],
-        description="Report Docker container status across all hosts.",
+    admin_job = define_asset_job(
+        "multihost_admin_job",
+        selection=[multihost_status_asset, multihost_cleanup_asset],
+        description="Check container status then clean up old exited containers.",
+        tags={"multihost/cleanup_max_age_hours": str(cleanup_max_age_hours)},
     )
 
     schedules = []
-    if cleanup_cron:
+    if cron_schedule:
         schedules.append(
             ScheduleDefinition(
-                name="multihost_cleanup_schedule",
-                job=cleanup_job,
-                cron_schedule=cleanup_cron,
-                default_status=None,
-            )
-        )
-    if status_cron:
-        schedules.append(
-            ScheduleDefinition(
-                name="multihost_status_schedule",
-                job=status_job,
-                cron_schedule=status_cron,
-                default_status=None,
+                name="multihost_admin_schedule",
+                job=admin_job,
+                cron_schedule=cron_schedule,
             )
         )
 
     return Definitions(
-        assets=[multihost_cleanup_asset, multihost_status_asset],
-        jobs=[cleanup_job, status_job],
+        assets=[multihost_status_asset, multihost_cleanup_asset],
+        jobs=[admin_job],
         schedules=schedules,
     )

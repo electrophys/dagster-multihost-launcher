@@ -29,8 +29,8 @@ load_from:
       location_name: "analytics"
 
   # Remote NON-Docker code location (bare process on Host D)
-  # Runs will use DefaultRunLauncher (execute on Host A) since
-  # this location is not listed under any docker_hosts entry
+  # DefaultRunLauncher sends start_run gRPC to this server;
+  # runs execute on Host D (not on Host A)
   - grpc_server:
       host: 10.0.1.4
       port: 4000

@@ -1,0 +1,20 @@
+# workspace.yaml — Integration test
+
+load_from:
+  # Admin code location — local container on Host A
+  - grpc_server:
+      host: admin_code_location
+      port: 4000
+      location_name: "admin"
+
+  # Dockerized test location — gRPC server on Host B (remote Docker host)
+  - grpc_server:
+      host: <HOST_B_IP>
+      port: 4001
+      location_name: "dockerized_test_location"
+
+  # Bare-process test location — gRPC server on Host D (non-Docker)
+  - grpc_server:
+      host: <HOST_D_IP>
+      port: 4000
+      location_name: "bare_process_test_location"

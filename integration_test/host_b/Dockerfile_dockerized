@@ -1,0 +1,16 @@
+FROM python:3.12-slim
+
+RUN pip install --no-cache-dir \
+    dagster==1.12.14 \
+    dagster-postgres==0.28.14 \
+    grpcio \
+    grpcio-health-checking
+
+COPY dockerized_test_location /opt/dagster/app/dockerized_test_location
+
+ENV DAGSTER_HOME=/opt/dagster/dagster_home
+RUN mkdir -p $DAGSTER_HOME
+
+COPY host_b/dagster_run_worker.yaml /opt/dagster/dagster_home/dagster.yaml
+
+WORKDIR /opt/dagster/app

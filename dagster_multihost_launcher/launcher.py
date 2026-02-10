@@ -32,6 +32,7 @@ from dagster._core.launcher import (
 )
 from dagster._core.launcher.default_run_launcher import DefaultRunLauncher
 from dagster._core.storage.dagster_run import DagsterRun, DagsterRunStatus
+from dagster._cli.api import ExecuteRunArgs
 from dagster._serdes import ConfigurableClass, ConfigurableClassData
 
 logger = logging.getLogger("dagster_multihost_launcher")
@@ -235,7 +236,7 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
 
     def _get_location_name(self, run: DagsterRun) -> Optional[str]:
         """Extract the code location name from a run."""
-        origin = run.external_job_origin
+        origin = run.remote_job_origin
         if origin is None:
             return None
         return origin.location_name
@@ -342,7 +343,12 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
             )
 
         # Build the dagster execute_run command
-        command = self._build_execute_run_command(run)
+        job_code_origin = check.not_none(context.job_code_origin)
+        command = ExecuteRunArgs(
+            job_origin=job_code_origin,
+            run_id=run.run_id,
+            instance_ref=self._instance.get_ref(),
+        ).get_command_args()
         env_vars = self._build_env_vars(run, host_info)
         labels = self._container_labels(run)
 
@@ -428,18 +434,6 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
         except Exception:
             pass
         return None
-
-    def _build_execute_run_command(self, run: DagsterRun) -> List[str]:
-        """Build the command that the run worker container will execute.
-
-        This mirrors what DockerRunLauncher does internally.
-        """
-        return [
-            "dagster",
-            "api",
-            "execute_run",
-            run.run_id,
-        ]
 
     def resume_run(self, context: ResumeRunContext) -> None:
         """Resume a previously interrupted run."""

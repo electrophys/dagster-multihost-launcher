@@ -1,0 +1,51 @@
+# dagster.yaml — Integration test (Host A control plane)
+
+scheduler:
+  module: dagster.core.scheduler
+  class: DagsterDaemonScheduler
+
+run_coordinator:
+  module: dagster.core.run_coordinator
+  class: QueuedRunCoordinator
+
+run_launcher:
+  module: dagster_multihost_launcher
+  class: MultiHostDockerRunLauncher
+  config:
+    default_container_kwargs:
+      auto_remove: false
+
+    docker_hosts:
+      - host_name: "docker-host-b"
+        docker_url: "tcp://<HOST_B_IP>:2376"
+        tls:
+          ca_cert: "/certs/ca.pem"
+          client_cert: "/certs/client-cert.pem"
+          client_key: "/certs/client-key.pem"
+          verify: true
+        location_names:
+          - "dockerized_test_location"
+        network: "dagster_network"
+        env_vars:
+          - "DAGSTER_POSTGRES_HOST=<HOST_A_IP>"
+          - "DAGSTER_POSTGRES_USER=dagster"
+          - "DAGSTER_POSTGRES_PASSWORD=dagster_password"
+          - "DAGSTER_POSTGRES_DB=dagster"
+          - "DAGSTER_POSTGRES_PORT=5433"
+
+    # "admin" and "bare_process_test_location" are NOT listed above,
+    # so they fall back to DefaultRunLauncher
+
+storage:
+  postgres:
+    postgres_db:
+      username:
+        env: DAGSTER_POSTGRES_USER
+      password:
+        env: DAGSTER_POSTGRES_PASSWORD
+      hostname:
+        env: DAGSTER_POSTGRES_HOST
+      db_name:
+        env: DAGSTER_POSTGRES_DB
+      port:
+        env: DAGSTER_POSTGRES_PORT

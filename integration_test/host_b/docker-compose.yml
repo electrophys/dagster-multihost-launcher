@@ -1,0 +1,35 @@
+# docker-compose.yml — Host B (remote Docker host)
+#
+# Runs the dockerized_test_location gRPC server.
+# The daemon on Host A creates run containers on this host via Docker TLS API.
+
+services:
+  dockerized_code_location:
+    image: dockerized_test_location:latest
+    container_name: dockerized_test_code_server
+    entrypoint:
+      - dagster
+      - code-server
+      - start
+      - -h
+      - "0.0.0.0"
+      - -p
+      - "4001"
+      - -m
+      - dockerized_test_location
+    environment:
+      DAGSTER_CURRENT_IMAGE: "dockerized_test_location:latest"
+      DAGSTER_POSTGRES_USER: dagster
+      DAGSTER_POSTGRES_PASSWORD: dagster_password
+      DAGSTER_POSTGRES_DB: dagster
+      DAGSTER_POSTGRES_HOST: "<HOST_A_IP>"
+      DAGSTER_POSTGRES_PORT: "5433"
+    ports:
+      - "4001:4001"
+    networks:
+      - dagster_network
+
+networks:
+  dagster_network:
+    name: dagster_network
+    driver: bridge

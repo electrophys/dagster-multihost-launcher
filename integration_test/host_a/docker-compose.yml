@@ -1,4 +1,4 @@
-# docker-compose.yml — Host A (control plane)
+# docker-compose.yml — Integration test Host A (control plane)
 #
 # Runs: webserver, daemon, postgres, admin code location
 
@@ -11,8 +11,9 @@ services:
       POSTGRES_PASSWORD: dagster_password
       POSTGRES_DB: dagster
     ports:
-      # Exposed so remote hosts can reach it
-      - "5432:5432"
+      # Exposed on all interfaces so remote hosts can reach it
+      # Using 5433 externally to avoid conflict with local postgres
+      - "5433:5432"
     volumes:
       - dagster_postgres_data:/var/lib/postgresql/data
     networks:
@@ -25,8 +26,8 @@ services:
 
   webserver:
     build:
-      context: .
-      dockerfile: Dockerfile_dagster
+      context: ../..
+      dockerfile: integration_test/host_a/Dockerfile_dagster
     container_name: dagster_webserver
     entrypoint:
       - dagster-webserver
@@ -37,7 +38,7 @@ services:
       - -w
       - workspace.yaml
     ports:
-      - "3000:3000"
+      - "3001:3000"
     environment: &dagster_env
       DAGSTER_POSTGRES_USER: dagster
       DAGSTER_POSTGRES_PASSWORD: dagster_password
@@ -45,9 +46,8 @@ services:
       DAGSTER_POSTGRES_HOST: postgres
       DAGSTER_POSTGRES_PORT: "5432"
     volumes:
-      - ./dagster.yaml:/opt/dagster/dagster_home/dagster.yaml
-      - ./workspace.yaml:/opt/dagster/dagster_home/workspace.yaml
-      # TLS certs for remote Docker daemons
+      - ./dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
+      - ./workspace.yaml:/opt/dagster/dagster_home/workspace.yaml:ro
       - ./certs:/certs:ro
     networks:
       - dagster_network
@@ -57,21 +57,17 @@ services:
 
   daemon:
     build:
-      context: .
-      dockerfile: Dockerfile_dagster
+      context: ../..
+      dockerfile: integration_test/host_a/Dockerfile_dagster
     container_name: dagster_daemon
     entrypoint:
       - dagster-daemon
       - run
     environment:
       <<: *dagster_env
-      # For DefaultRunLauncher fallback — the daemon host IP as seen
-      # from code location containers (not "postgres" since remote
-      # run containers won't be on this docker network)
-      DAGSTER_POSTGRES_HOST_EXTERNAL: "10.0.1.1"
     volumes:
-      - ./dagster.yaml:/opt/dagster/dagster_home/dagster.yaml
-      - ./workspace.yaml:/opt/dagster/dagster_home/workspace.yaml
+      - ./dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
+      - ./workspace.yaml:/opt/dagster/dagster_home/workspace.yaml:ro
       - ./certs:/certs:ro
     networks:
       - dagster_network
@@ -79,13 +75,10 @@ services:
       postgres:
         condition: service_healthy
 
-  # Admin code location — runs ON Host A, uses DefaultRunLauncher
-  # Needs dagster.yaml + certs because admin assets rehydrate the launcher
-  # to talk to remote Docker daemons for container status/cleanup.
   admin_code_location:
     build:
-      context: .
-      dockerfile: Dockerfile_admin
+      context: ../..
+      dockerfile: integration_test/host_a/Dockerfile_admin
     container_name: dagster_admin
     entrypoint:
       - dagster
@@ -102,8 +95,6 @@ services:
     volumes:
       - ./dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
       - ./certs:/certs:ro
-    ports:
-      - "4000:4000"
     networks:
       - dagster_network
 

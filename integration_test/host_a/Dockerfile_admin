@@ -1,0 +1,20 @@
+FROM python:3.12-slim
+
+RUN pip install --no-cache-dir \
+    dagster==1.12.14 \
+    dagster-postgres==0.28.14 \
+    dagster-docker==0.28.14 \
+    docker>=7.0.0
+
+# Install the multihost launcher package (needed for admin_assets imports)
+COPY dagster_multihost_launcher/ /opt/dagster/src/dagster_multihost_launcher/
+COPY pyproject.toml /opt/dagster/src/pyproject.toml
+RUN pip install --no-cache-dir /opt/dagster/src
+
+# Copy the admin code location
+COPY integration_test/admin_location/ /opt/dagster/app/admin_location/
+
+ENV DAGSTER_HOME=/opt/dagster/dagster_home
+RUN mkdir -p $DAGSTER_HOME
+
+WORKDIR /opt/dagster/app

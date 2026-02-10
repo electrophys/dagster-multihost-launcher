@@ -44,9 +44,10 @@ A composite Dagster run launcher that routes runs to multiple Docker daemons acr
           │  │ code loc gRPC    │  (bare process)     │
           │  │ (reporting)      │                     │
           │  └──────────────────┘                     │
-          │                                           │
-          │  Runs execute on Host A via               │
-          │  DefaultRunLauncher (subprocess)          │
+          │         ▲                                 │
+          │         │ DefaultRunLauncher sends        │
+          │         │ start_run gRPC; run executes    │
+          │         │ here in the gRPC server process │
           └───────────────────────────────────────────┘
 ```
 
@@ -55,9 +56,9 @@ A composite Dagster run launcher that routes runs to multiple Docker daemons acr
 The launcher inspects each run's code location name and routes it:
 
 1. **Code locations listed under `docker_hosts`** → creates a Docker container on the mapped remote daemon via the Docker TCP API
-2. **All other code locations** → delegates to Dagster's `DefaultRunLauncher` (spawns a subprocess on the daemon host)
+2. **All other code locations** → delegates to Dagster's `DefaultRunLauncher`, which sends a `start_run` gRPC call to the code location's gRPC server — the run executes as a subprocess on whichever host runs that gRPC server
 
-This means you can mix Docker-based and non-Docker code locations freely. Any location not explicitly mapped to a Docker host automatically falls back to local execution.
+This means you can mix Docker-based and non-Docker code locations freely. Any location not explicitly mapped to a Docker host automatically falls back to the DefaultRunLauncher.
 
 ## Installation
 
@@ -199,22 +200,30 @@ The package includes pre-built assets for container cleanup and monitoring. On H
 from dagster_multihost_launcher import build_admin_definitions
 
 defs = build_admin_definitions(
-    cleanup_cron="0 */6 * * *",   # clean up every 6 hours
-    status_cron="0 * * * *",       # status check every hour
+    cron_schedule="0 */6 * * *",       # run every 6 hours
+    cleanup_max_age_hours=24.0,        # remove containers older than 24h
 )
 ```
 
-Since this code location is NOT listed under any `docker_hosts` entry, it automatically runs via `DefaultRunLauncher` on Host A — which is exactly where the Docker clients are configured.
+This creates a single `multihost_admin_job` that first checks container status across all hosts, then cleans up old exited containers. The two assets (`multihost_container_status` → `multihost_container_cleanup`) run in sequence within the same job.
 
-The cleanup asset removes exited containers older than 24 hours (configurable via the `multihost/cleanup_max_age_hours` run tag).
+Since this code location is NOT listed under any `docker_hosts` entry, it runs via `DefaultRunLauncher` on Host A — which is where the Docker clients and TLS certs are configured.
+
+**Important:** The admin container needs the `dagster.yaml` and TLS certs mounted, because the admin assets rehydrate the `MultiHostDockerRunLauncher` to talk to remote Docker daemons. See the example `docker-compose.yml` for the required volume mounts.
+
+The cleanup max age is configurable per-run via the `multihost/cleanup_max_age_hours` run tag.
 
 ## Networking Considerations
 
 ### Run containers → Postgres
 
 Run containers on remote hosts need to reach Postgres on Host A. Use Host A's real IP/hostname (not a docker-compose service name) for `DAGSTER_POSTGRES_HOST`. Make sure:
-- Postgres port (5432) is published on Host A
-- Firewall rules allow traffic from Host B/C
+- Postgres port is published on Host A (on all interfaces, not just localhost)
+- Firewall rules allow traffic from remote hosts
+
+### DefaultRunLauncher and instance_ref
+
+When `DefaultRunLauncher` sends a run to a remote gRPC server, it includes the daemon's `instance_ref` — the serialized storage config from `dagster.yaml`. If your storage config uses `env:` references (e.g., `env: DAGSTER_POSTGRES_HOST`), those env vars must also be set on the remote gRPC server's host. Use the same env var names but with values appropriate for that host (e.g., Host A's external IP instead of a Docker service name).
 
 ### Run containers → other services
 
@@ -257,7 +266,9 @@ For container-level failures (OOM, image pull errors, crashes), the `check_run_w
 
 ## Examples
 
-See the `examples/` directory for complete setups:
+The root-level `dagster.yaml`, `workspace.yaml`, `docker-compose.yml`, and `host_b_docker-compose.yml` provide example configurations for a typical multi-host setup.
 
-- `examples/host_a/` — Control plane (webserver, daemon, postgres, admin code location)
-- `examples/host_b/` — Remote Docker worker host with code locations
+The `integration_test/` directory contains a complete working test setup across three hosts:
+- `integration_test/host_a/` — Control plane (webserver, daemon, postgres, admin code location)
+- `integration_test/host_b/` — Remote Docker host with TLS, running a dockerized test code location
+- `integration_test/host_d/` — Bare-process host running a non-Docker gRPC server
