@@ -95,8 +95,18 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
 
     @staticmethod
     def _build_docker_client(host_cfg: Dict[str, Any]) -> docker.DockerClient:
-        """Create a Docker client from host configuration."""
-        docker_url = host_cfg["docker_url"]
+        """Create a Docker client from host configuration.
+
+        If ``docker_url`` is omitted, connects to the local Docker daemon
+        via ``docker.from_env()`` (reads DOCKER_HOST or defaults to the
+        local socket). This is useful for running containerized code
+        locations on Host A alongside the Dagster control plane.
+        """
+        docker_url = host_cfg.get("docker_url")
+
+        if not docker_url:
+            return docker.from_env()
+
         kwargs: Dict[str, Any] = {"base_url": docker_url}
 
         tls_cfg = host_cfg.get("tls")
@@ -143,9 +153,12 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
             ),
             "docker_url": Field(
                 StringSource,
+                is_required=False,
                 description=(
                     "Docker daemon URL. Examples: "
-                    "tcp://10.0.0.2:2376, ssh://user@host, unix:///var/run/docker.sock"
+                    "tcp://10.0.0.2:2376, ssh://user@host, unix:///var/run/docker.sock. "
+                    "If omitted, connects to the local Docker daemon (useful for "
+                    "running containerized code locations on the control plane host)."
                 ),
             ),
             "location_names": Field(

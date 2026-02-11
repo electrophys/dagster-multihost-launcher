@@ -28,6 +28,13 @@ run_launcher:
 
     # Docker hosts and their code location mappings
     docker_hosts:
+      # Host A (local): containerized code locations on the control plane host.
+      # Omitting docker_url connects to the local Docker daemon.
+      - host_name: "host-a"
+        location_names:
+          - "local_pipelines"
+        network: "dagster_network"
+
       # Host B: runs data pipeline code locations
       - host_name: "host-b"
         docker_url: "tcp://10.0.1.2:2376"
@@ -55,9 +62,8 @@ run_launcher:
           - "analytics"
         network: "host_c_dagster_network"
 
-    # Any location NOT listed above (including "admin" and
-    # "reporting_service") will use the DefaultRunLauncher
-    # and run on Host A as a subprocess.
+    # Any location NOT listed above (e.g. "admin", "reporting_service")
+    # will use the DefaultRunLauncher and run as a subprocess via gRPC.
 
 storage:
   postgres:

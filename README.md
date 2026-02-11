@@ -84,6 +84,14 @@ run_launcher:
       - DAGSTER_POSTGRES_HOST
 
     docker_hosts:
+      # Host A: containerized code locations on the control plane host.
+      # Omitting docker_url connects to the local Docker daemon.
+      - host_name: "host-a"
+        location_names:
+          - "local_pipelines"
+        network: "dagster_network"
+
+      # Host B: remote Docker host with TLS
       - host_name: "host-b"
         docker_url: "tcp://10.0.1.2:2376"
         tls:
@@ -92,20 +100,12 @@ run_launcher:
           client_key: "/certs/client-key.pem"
         location_names:
           - "etl_pipelines"
-          - "ml_training"
         network: "host_b_dagster_network"
         env_vars:
           - "WAREHOUSE_HOST=10.0.1.50"
 
-      - host_name: "host-c"
-        docker_url: "tcp://10.0.1.3:2376"
-        tls:
-          ca_cert: "/certs/ca.pem"
-          client_cert: "/certs/client-cert.pem"
-          client_key: "/certs/client-key.pem"
-        location_names:
-          - "analytics"
-        network: "host_c_dagster_network"
+    # Host D's "reporting" code location is NOT listed above, so it
+    # uses DefaultRunLauncher — the run executes on Host D's gRPC server.
 ```
 
 ### Configuration Reference
@@ -124,7 +124,7 @@ run_launcher:
 | Key | Type | Required | Description |
 |-----|------|----------|-------------|
 | `host_name` | str | yes | Friendly name (used in tags/logs) |
-| `docker_url` | str | yes | Docker daemon URL (`tcp://`, `ssh://`, `unix://`) |
+| `docker_url` | str | no | Docker daemon URL (`tcp://`, `ssh://`, `unix://`). Omit to use the local daemon. |
 | `location_names` | list[str] | yes | Code locations that run here |
 | `tls` | dict | no | TLS config (ca_cert, client_cert, client_key, verify) |
 | `network` | str | no | Docker network to attach run containers to |
