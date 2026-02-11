@@ -210,6 +210,27 @@ Since this code location is NOT listed under any `docker_hosts` entry, it runs v
 
 The cleanup max age is configurable per-run via the `multihost/cleanup_max_age_hours` run tag.
 
+### Integrating into an existing code location
+
+If you already have a code location with its own `Definitions`, you can import the individual assets instead of using `build_admin_definitions`:
+
+```python
+from dagster_multihost_launcher import multihost_cleanup_asset, multihost_status_asset
+from dagster import Definitions, ScheduleDefinition, define_asset_job
+
+admin_job = define_asset_job(
+    "admin_job",
+    selection=[multihost_status_asset, multihost_cleanup_asset],
+)
+admin_schedule = ScheduleDefinition(job=admin_job, cron_schedule="0 */6 * * *")
+
+defs = Definitions(
+    assets=[my_asset_1, my_asset_2, multihost_status_asset, multihost_cleanup_asset],
+    jobs=[my_job, admin_job],
+    schedules=[my_schedule, admin_schedule],
+)
+```
+
 ## Networking Considerations
 
 ### Run containers → Postgres

@@ -2,15 +2,35 @@
   "name": "dagster-multihost-launcher",
   "image": "mcr.microsoft.com/devcontainers/python:3.13",
   "features": {
-    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "moby": false
+    }
   },
-  "postCreateCommand": "uv sync --group dev && uv run pre-commit install",
+  "initializeCommand": "mkdir -p ${localEnv:HOME}/.ssh ${localEnv:HOME}/.claude",
+  "mounts": [
+    "source=${localEnv:HOME}/.ssh,target=/home/vscode/.ssh,type=bind,readonly",
+    "source=${localEnv:HOME}/.claude,target=/home/vscode/.claude,type=bind"
+  ],
+  "postStartCommand": "sudo chown -R vscode:vscode /home/vscode/.claude",
+  "postCreateCommand": "pip install uv && uv sync --group dev && uv run pre-commit install",
+  "forwardPorts": [3000],
+  "portsAttributes": {
+    "3000": {
+      "label": "Dagster Webserver",
+      "onAutoForward": "notify"
+    }
+  },
+  "containerEnv": {
+    "DAGSTER_HOME": "/workspaces/dagster-multihost-launcher"
+  },
   "customizations": {
     "vscode": {
       "extensions": [
         "ms-python.python",
         "ms-python.black-formatter",
-        "charliermarsh.ruff"
+        "charliermarsh.ruff",
+        "redhat.vscode-yaml",
+        "anthropic.claude-code"
       ]
     }
   }

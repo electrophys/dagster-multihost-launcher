@@ -31,3 +31,6 @@ history/
 # Environment
 .env
 .env.*
+
+# AI
+.claude
