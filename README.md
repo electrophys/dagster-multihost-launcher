@@ -63,7 +63,7 @@ This means you can mix Docker-based and non-Docker code locations freely. Any lo
 ## Installation
 
 ```bash
-pip install -e ./dagster-multihost-launcher
+pip install dagster-multihost-launcher
 ```
 
 The package must be installed in the Docker images for the **webserver** and **daemon** containers on Host A.
