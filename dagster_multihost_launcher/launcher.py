@@ -12,7 +12,7 @@ Typical setup:
 
 import logging
 import time
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Dict, List, Optional
 
 import docker
 from docker.tls import TLSConfig
@@ -31,7 +31,7 @@ from dagster._core.launcher import (
     WorkerStatus,
 )
 from dagster._core.launcher.default_run_launcher import DefaultRunLauncher
-from dagster._core.storage.dagster_run import DagsterRun, DagsterRunStatus
+from dagster._core.storage.dagster_run import DagsterRun
 from dagster._cli.api import ExecuteRunArgs
 from dagster._serdes import ConfigurableClass, ConfigurableClassData
 
@@ -74,7 +74,7 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
         # Also keep a name -> client map for cleanup operations
         self._docker_clients: Dict[str, docker.DockerClient] = {}
 
-        for host_cfg in (docker_hosts or []):
+        for host_cfg in docker_hosts or []:
             client = self._build_docker_client(host_cfg)
             host_name = host_cfg["host_name"]
             self._docker_clients[host_name] = client
@@ -392,8 +392,7 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
             create_kwargs["network"] = networks[0]
 
         self._instance.report_engine_event(
-            f"Creating Docker container on host '{host_name}' "
-            f"with image '{image}'",
+            f"Creating Docker container on host '{host_name}' " f"with image '{image}'",
             run,
             cls=self.__class__,
         )
@@ -614,17 +613,21 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
 
             for c in containers:
                 state = c.attrs.get("State", {})
-                results.append({
-                    "host_name": hname,
-                    "container_id": c.id,
-                    "short_id": c.short_id,
-                    "run_id": c.labels.get(f"{prefix}/run_id", "unknown"),
-                    "status": c.status,
-                    "image": c.image.tags[0] if c.image.tags else str(c.image.id)[:12],
-                    "created": c.attrs.get("Created"),
-                    "finished_at": state.get("FinishedAt"),
-                    "exit_code": state.get("ExitCode"),
-                })
+                results.append(
+                    {
+                        "host_name": hname,
+                        "container_id": c.id,
+                        "short_id": c.short_id,
+                        "run_id": c.labels.get(f"{prefix}/run_id", "unknown"),
+                        "status": c.status,
+                        "image": (
+                            c.image.tags[0] if c.image.tags else str(c.image.id)[:12]
+                        ),
+                        "created": c.attrs.get("Created"),
+                        "finished_at": state.get("FinishedAt"),
+                        "exit_code": state.get("ExitCode"),
+                    }
+                )
 
         return results
 

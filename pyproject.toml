@@ -37,6 +37,9 @@ Repository = "https://github.com/isaac/dagster-multihost-launcher"
 dev = [
     "pytest",
     "dagster[test]",
+    "pre-commit",
+    "black",
+    "ruff",
 ]
 
 [tool.setuptools.packages.find]

@@ -47,6 +47,7 @@ EXPECTED_LOCATIONS = ["admin", "dockerized_test_location", "bare_process_test_lo
 
 # ── Terminal output helpers ────────────────────────────────────────────────
 
+
 class Colors:
     GREEN = "\033[92m"
     RED = "\033[91m"
@@ -69,6 +70,7 @@ def log_fail(msg):
 
 
 # ── Shell helpers ──────────────────────────────────────────────────────────
+
 
 def run_cmd(args, check=True, capture=False, **kwargs):
     """Run a local command with logging."""
@@ -101,10 +103,13 @@ def scp_to_remote(user, host, local_paths, remote_dir):
 
 # ── GraphQL helpers ────────────────────────────────────────────────────────
 
+
 def graphql_query(query):
     """Execute a GraphQL query against the Dagster webserver."""
     payload = json.dumps({"query": query}).encode("utf-8")
-    req = Request(GRAPHQL_URL, data=payload, headers={"Content-Type": "application/json"})
+    req = Request(
+        GRAPHQL_URL, data=payload, headers={"Content-Type": "application/json"}
+    )
     with urlopen(req, timeout=30) as resp:
         return json.loads(resp.read())
 
@@ -145,7 +150,9 @@ def wait_for_run(run_id, timeout=180):
             return status
         time.sleep(5)
 
-    raise TimeoutError(f"Run {run_id} did not complete within {timeout}s (last status: {status})")
+    raise TimeoutError(
+        f"Run {run_id} did not complete within {timeout}s (last status: {status})"
+    )
 
 
 def get_run_tags(run_id):
@@ -189,6 +196,7 @@ def get_asset_metadata(asset_name):
 
 # ── IP substitution ────────────────────────────────────────────────────────
 
+
 def substitute_ips(host_a_ip, host_b_ip, host_d_ip):
     """Replace placeholders in config files with real IPs."""
     log("DEPLOY", "Substituting IPs into config files...")
@@ -213,22 +221,32 @@ def restore_placeholders(host_a_ip, host_b_ip, host_d_ip):
 
 # ── Deployment ─────────────────────────────────────────────────────────────
 
+
 def deploy_host_a():
     """Start Host A control plane via docker compose."""
     log("DEPLOY", "Starting Host A (docker compose up --build)...")
-    run_cmd([
-        "docker", "compose",
-        "-f", str(INTEGRATION_DIR / "host_a" / "docker-compose.yml"),
-        "up", "-d", "--build",
-    ])
+    run_cmd(
+        [
+            "docker",
+            "compose",
+            "-f",
+            str(INTEGRATION_DIR / "host_a" / "docker-compose.yml"),
+            "up",
+            "-d",
+            "--build",
+        ]
+    )
 
     # Wait for webserver to be reachable
     log("DEPLOY", "Waiting for webserver at http://localhost:3001 ...")
     deadline = time.time() + 120
     while time.time() < deadline:
         try:
-            req = Request(GRAPHQL_URL, data=b'{"query":"{ __typename }"}',
-                          headers={"Content-Type": "application/json"})
+            req = Request(
+                GRAPHQL_URL,
+                data=b'{"query":"{ __typename }"}',
+                headers={"Content-Type": "application/json"},
+            )
             with urlopen(req, timeout=5):
                 pass
             log("DEPLOY", "Webserver is up.")
@@ -246,18 +264,27 @@ def deploy_host_b(user, host):
     ssh_run(user, host, "mkdir -p ~/dagster-test")
 
     # Copy files
-    scp_to_remote(user, host, [
-        INTEGRATION_DIR / "host_b",
-        INTEGRATION_DIR / "dockerized_test_location",
-    ], "~/dagster-test/")
+    scp_to_remote(
+        user,
+        host,
+        [
+            INTEGRATION_DIR / "host_b",
+            INTEGRATION_DIR / "dockerized_test_location",
+        ],
+        "~/dagster-test/",
+    )
 
     # Build image and start containers (rootful docker)
-    ssh_run(user, host, (
-        "cd ~/dagster-test && "
-        "sudo docker build -t dockerized_test_location:latest "
-        "-f host_b/Dockerfile_dockerized . && "
-        "sudo docker compose -f host_b/docker-compose.yml up -d"
-    ))
+    ssh_run(
+        user,
+        host,
+        (
+            "cd ~/dagster-test && "
+            "sudo docker build -t dockerized_test_location:latest "
+            "-f host_b/Dockerfile_dockerized . && "
+            "sudo docker compose -f host_b/docker-compose.yml up -d"
+        ),
+    )
 
 
 def deploy_host_d(user, host):
@@ -265,25 +292,39 @@ def deploy_host_d(user, host):
     log("DEPLOY", f"Deploying to Host D ({user}@{host})...")
 
     # Ensure remote directory exists
-    ssh_run(user, host, 'powershell -Command "New-Item -ItemType Directory -Force -Path C:\\dagster-test"',
-            check=False)
+    ssh_run(
+        user,
+        host,
+        'powershell -Command "New-Item -ItemType Directory -Force -Path C:\\dagster-test"',
+        check=False,
+    )
 
     # Copy files
-    scp_to_remote(user, host, [
-        INTEGRATION_DIR / "bare_process_test_location",
-        INTEGRATION_DIR / "host_d" / "dagster.yaml",
-        INTEGRATION_DIR / "host_d" / "start_grpc.ps1",
-    ], "C:/dagster-test/")
+    scp_to_remote(
+        user,
+        host,
+        [
+            INTEGRATION_DIR / "bare_process_test_location",
+            INTEGRATION_DIR / "host_d" / "dagster.yaml",
+            INTEGRATION_DIR / "host_d" / "start_grpc.ps1",
+        ],
+        "C:/dagster-test/",
+    )
 
     # Start gRPC server as background process
-    ssh_run(user, host, (
-        "powershell -Command \""
-        "Start-Process powershell -ArgumentList '-File','C:\\dagster-test\\start_grpc.ps1'"
-        "\""
-    ))
+    ssh_run(
+        user,
+        host,
+        (
+            'powershell -Command "'
+            "Start-Process powershell -ArgumentList '-File','C:\\dagster-test\\start_grpc.ps1'"
+            '"'
+        ),
+    )
 
 
 # ── Wait for workspace ────────────────────────────────────────────────────
+
 
 def wait_for_workspace(timeout=120):
     """Poll until all expected code locations are loaded."""
@@ -325,41 +366,61 @@ def reload_workspace():
 
 # ── Teardown ───────────────────────────────────────────────────────────────
 
+
 def teardown_host_a():
     """Stop Host A services."""
     log("CLEAN", "Tearing down Host A...")
-    run_cmd([
-        "docker", "compose",
-        "-f", str(INTEGRATION_DIR / "host_a" / "docker-compose.yml"),
-        "down",
-    ], check=False)
+    run_cmd(
+        [
+            "docker",
+            "compose",
+            "-f",
+            str(INTEGRATION_DIR / "host_a" / "docker-compose.yml"),
+            "down",
+        ],
+        check=False,
+    )
 
 
 def teardown_host_b(user, host):
     """Stop Host B services."""
     log("CLEAN", f"Tearing down Host B ({user}@{host})...")
-    ssh_run(user, host, (
-        "cd ~/dagster-test && "
-        "sudo docker compose -f host_b/docker-compose.yml down"
-    ), check=False)
+    ssh_run(
+        user,
+        host,
+        (
+            "cd ~/dagster-test && "
+            "sudo docker compose -f host_b/docker-compose.yml down"
+        ),
+        check=False,
+    )
 
 
 def teardown_host_d(user, host):
     """Stop Host D gRPC server."""
     log("CLEAN", f"Tearing down Host D ({user}@{host})...")
-    ssh_run(user, host, (
-        'powershell -Command "'
-        "Get-Process | Where-Object { $_.Path -like '*dagster*' } | "
-        'Stop-Process -Force -ErrorAction SilentlyContinue"'
-    ), check=False)
+    ssh_run(
+        user,
+        host,
+        (
+            'powershell -Command "'
+            "Get-Process | Where-Object { $_.Path -like '*dagster*' } | "
+            'Stop-Process -Force -ErrorAction SilentlyContinue"'
+        ),
+        check=False,
+    )
 
 
 # ── Tests ──────────────────────────────────────────────────────────────────
 
+
 def test_dockerized_materialization():
     """Test 1: Docker routing — materialize on remote Docker host."""
     print()
-    log("TEST", f"{Colors.BOLD}Test 1: Dockerized materialization (Docker routing){Colors.RESET}")
+    log(
+        "TEST",
+        f"{Colors.BOLD}Test 1: Dockerized materialization (Docker routing){Colors.RESET}",
+    )
 
     mutation = (
         "mutation { launchRun(executionParams: { "
@@ -418,7 +479,10 @@ def test_dockerized_materialization():
 def test_bare_process_materialization():
     """Test 2: DefaultRunLauncher fallback — materialize on bare-process host."""
     print()
-    log("TEST", f"{Colors.BOLD}Test 2: Bare process materialization (DefaultRunLauncher fallback){Colors.RESET}")
+    log(
+        "TEST",
+        f"{Colors.BOLD}Test 2: Bare process materialization (DefaultRunLauncher fallback){Colors.RESET}",
+    )
 
     mutation = (
         "mutation { launchRun(executionParams: { "
@@ -470,7 +534,10 @@ def test_bare_process_materialization():
 def test_admin_job():
     """Test 3: Admin job — container status + cleanup via DefaultRunLauncher."""
     print()
-    log("TEST", f"{Colors.BOLD}Test 3: Admin job (container status + cleanup){Colors.RESET}")
+    log(
+        "TEST",
+        f"{Colors.BOLD}Test 3: Admin job (container status + cleanup){Colors.RESET}",
+    )
 
     mutation = (
         "mutation { launchRun(executionParams: { "
@@ -512,17 +579,34 @@ def test_admin_job():
 
 # ── Main ───────────────────────────────────────────────────────────────────
 
+
 def main():
     parser = argparse.ArgumentParser(
         description="Integration test runner for dagster-multihost-launcher"
     )
-    parser.add_argument("--host-a-ip", required=True, help="IP of Host A (control plane)")
-    parser.add_argument("--host-b-ip", required=True, help="IP of Host B (remote Docker)")
-    parser.add_argument("--host-d-ip", required=True, help="IP of Host D (bare process)")
-    parser.add_argument("--host-b-user", default="pi", help="SSH user for Host B (default: pi)")
-    parser.add_argument("--host-d-user", default="ihenr", help="SSH user for Host D (default: ihenr)")
-    parser.add_argument("--skip-deploy", action="store_true", help="Skip deployment, just run tests")
-    parser.add_argument("--skip-teardown", action="store_true", help="Leave services running after tests")
+    parser.add_argument(
+        "--host-a-ip", required=True, help="IP of Host A (control plane)"
+    )
+    parser.add_argument(
+        "--host-b-ip", required=True, help="IP of Host B (remote Docker)"
+    )
+    parser.add_argument(
+        "--host-d-ip", required=True, help="IP of Host D (bare process)"
+    )
+    parser.add_argument(
+        "--host-b-user", default="pi", help="SSH user for Host B (default: pi)"
+    )
+    parser.add_argument(
+        "--host-d-user", default="ihenr", help="SSH user for Host D (default: ihenr)"
+    )
+    parser.add_argument(
+        "--skip-deploy", action="store_true", help="Skip deployment, just run tests"
+    )
+    parser.add_argument(
+        "--skip-teardown",
+        action="store_true",
+        help="Leave services running after tests",
+    )
     args = parser.parse_args()
 
     results = []
@@ -544,8 +628,12 @@ def main():
         wait_for_workspace()
 
         # Run tests
-        results.append(("Dockerized materialization", test_dockerized_materialization()))
-        results.append(("Bare process materialization", test_bare_process_materialization()))
+        results.append(
+            ("Dockerized materialization", test_dockerized_materialization())
+        )
+        results.append(
+            ("Bare process materialization", test_bare_process_materialization())
+        )
         results.append(("Admin job", test_admin_job()))
 
     except Exception as e:
