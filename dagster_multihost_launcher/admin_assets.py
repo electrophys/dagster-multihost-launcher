@@ -19,7 +19,7 @@ Or compose them into your own Definitions:
         "admin_job",
         selection=[multihost_status_asset, multihost_cleanup_asset],
     )
-    admin_schedule = ScheduleDefinition(job=admin_job, cron_schedule="*/5 * * * *")
+    admin_schedule = ScheduleDefinition(job=admin_job, cron_schedule="0 */6 * * *")
 
     defs = Definitions(
         assets=[multihost_status_asset, multihost_cleanup_asset],
@@ -124,7 +124,7 @@ def multihost_cleanup_asset(context: AssetExecutionContext) -> MaterializeResult
 
     # You can override max_age_hours via run config tags if needed
     max_age_hours = float(
-        context.dagster_run.tags.get("multihost/cleanup_max_age_hours", "24")
+        context.dagster_run.tags.get("multihost/cleanup_max_age_hours", str(1 / 60))
     )
 
     context.log.info("Cleaning up containers older than %.1f hours...", max_age_hours)
@@ -152,14 +152,14 @@ def multihost_cleanup_asset(context: AssetExecutionContext) -> MaterializeResult
 
 
 def build_admin_definitions(
-    cron_schedule: str = "0 */6 * * *",
-    cleanup_max_age_hours: float = 24.0,
+    cron_schedule: str = "*/5 * * * *",
+    cleanup_max_age_hours: float = 1 / 60,
 ) -> Definitions:
     """Build a complete Definitions object for the admin code location.
 
     Args:
-        cron_schedule: Cron schedule for the admin job. Default: every 6 hours.
-        cleanup_max_age_hours: Max container age in hours before cleanup. Default: 24.
+        cron_schedule: Cron schedule for the admin job. Default: every 5 minutes.
+        cleanup_max_age_hours: Max container age in hours before cleanup. Default: 1 minute.
 
     Returns:
         A Definitions object you can use directly or merge with your own.

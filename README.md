@@ -199,10 +199,7 @@ The package includes pre-built assets for container cleanup and monitoring. On H
 # admin_location/__init__.py
 from dagster_multihost_launcher import build_admin_definitions
 
-defs = build_admin_definitions(
-    cron_schedule="0 */6 * * *",       # run every 6 hours
-    cleanup_max_age_hours=24.0,        # remove containers older than 24h
-)
+defs = build_admin_definitions()  # every 5 min, cleanup after 1 min
 ```
 
 This creates a single `multihost_admin_job` that first checks container status across all hosts, then cleans up old exited containers. The two assets (`multihost_container_status` → `multihost_container_cleanup`) run in sequence within the same job.
