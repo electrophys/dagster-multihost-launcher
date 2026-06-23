@@ -12,6 +12,7 @@ Typical setup:
 
 import logging
 import time
+import os
 from typing import Any, Dict, List, Optional
 
 import docker
@@ -111,9 +112,25 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
 
         tls_cfg = host_cfg.get("tls")
         if tls_cfg:
+            # Validate TLS file paths early to surface helpful errors
+            host_name = host_cfg.get("host_name", docker_url or "<unknown>")
+            ca = tls_cfg.get("ca_cert")
+            cert = tls_cfg.get("client_cert")
+            key = tls_cfg.get("client_key")
+
+            for path, label in [
+                (ca, "ca_cert"),
+                (cert, "client_cert"),
+                (key, "client_key"),
+            ]:
+                if path and not os.path.exists(path):
+                    raise FileNotFoundError(
+                        f"TLS {label} file '{path}' for Docker host '{host_name}' does not exist"
+                    )
+
             kwargs["tls"] = TLSConfig(
-                ca_cert=tls_cfg.get("ca_cert"),
-                client_cert=(tls_cfg["client_cert"], tls_cfg["client_key"]),
+                ca_cert=ca,
+                client_cert=(cert, key),
                 verify=tls_cfg.get("verify", True),
             )
 
@@ -121,7 +138,13 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
         if docker_url.startswith("ssh://"):
             kwargs["use_ssh_client"] = True
 
-        return docker.DockerClient(**kwargs)
+        try:
+            return docker.DockerClient(**kwargs)
+        except Exception as e:
+            base = kwargs.get("base_url")
+            raise RuntimeError(
+                f"Failed to create Docker client for host '{host_cfg.get('host_name', base)}' (base_url={base}): {e}"
+            )
 
     # -------------------------------------------------------------------------
     # ConfigurableClass interface
@@ -349,11 +372,17 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
         # Authenticate to registry if configured
         registry = host_info.get("registry")
         if registry:
-            client.login(
-                username=registry["username"],
-                password=registry["password"],
-                registry=registry["url"],
-            )
+            try:
+                client.login(
+                    username=registry["username"],
+                    password=registry["password"],
+                    registry=registry["url"],
+                )
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to authenticate to registry for host '{host_name}': {e}."
+                    " Check registry credentials and network connectivity."
+                )
 
         # Build the dagster execute_run command
         job_code_origin = check.not_none(context.job_code_origin)
@@ -406,8 +435,15 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
                 run,
                 cls=self.__class__,
             )
-            client.images.pull(image)
+            try:
+                client.images.pull(image)
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to pull image '{image}' on host '{host_name}': {e}"
+                )
             container = client.containers.create(**create_kwargs)
+        except Exception as e:
+            raise RuntimeError(f"Failed to create container on '{host_name}': {e}")
 
         # Connect to additional networks
         for net in networks[1:]:
@@ -417,7 +453,15 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
             except docker.errors.NotFound:
                 logger.warning("Network '%s' not found on host '%s'", net, host_name)
 
-        container.start()
+        try:
+            container.start()
+        except Exception as e:
+            self._instance.report_engine_event(
+                f"Failed to start container on '{host_name}': {e}",
+                run,
+                cls=self.__class__,
+            )
+            raise RuntimeError(f"Failed to start container on '{host_name}': {e}")
 
         self._instance.add_run_tags(
             run.run_id,

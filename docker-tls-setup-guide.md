@@ -56,10 +56,15 @@ You'll be prompted for a passphrase. Choose something strong and store it secure
 
 ```bash
 openssl req -new -x509 -days 3650 -key ca-key.pem -sha256 -out ca.pem \
-  -subj "/C=US/ST=Washington/L=Pasco/O=MyOrg/CN=Docker CA"
+  -subj "/C=US/ST=Washington/L=Pasco/O=MyOrg/CN=Docker CA" \
+  -addext "subjectKeyIdentifier=hash" \
+  -addext "basicConstraints=critical,CA:TRUE" \
+  -addext "keyUsage=critical,keyCertSign,cRLSign"
 ```
 
 Adjust the subject fields to match your organization. The `-days 3650` gives you a 10-year CA — adjust as needed for your security policy.
+
+> **Why the `-addext` flags?** They embed a **Subject Key Identifier** on the CA and mark it as a CA with the right key usage. Modern TLS stacks (OpenSSL 3.x / Python 3.13+) enforce strict RFC 5280 validation and will reject a certificate chain whose CA lacks a Subject Key Identifier or whose leaf certs lack a matching **Authority Key Identifier**. The older Docker TLS recipe omitted these and fails with `certificate verify failed: Missing Authority Key Identifier`. The leaf-cert steps below add the matching extensions.
 
 You now have:
 - `ca-key.pem` — CA private key (keep this secret and offline if possible)
@@ -91,6 +96,10 @@ This is critical — Docker validates the server certificate against the hostnam
 cat > server-host-b-extfile.cnf <<EOF
 subjectAltName = DNS:host-b,DNS:host-b.example.com,IP:10.0.1.2,IP:127.0.0.1
 extendedKeyUsage = serverAuth
+basicConstraints = critical,CA:FALSE
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid,issuer
+keyUsage = critical,digitalSignature,keyEncipherment
 EOF
 ```
 
@@ -99,6 +108,8 @@ EOF
 - `DNS:host-b.example.com` — FQDN if you use DNS
 - `IP:10.0.1.2` — the IP address used in your `dagster.yaml` `docker_url`
 - `IP:127.0.0.1` — for local testing on the host itself
+
+The `subjectKeyIdentifier` / `authorityKeyIdentifier` lines are required for strict TLS verification (see the note in Step 1.2). The `authorityKeyIdentifier = keyid` value is copied from the CA cert at signing time, which is why the CA must carry a Subject Key Identifier.
 
 ### 2.4 Sign the server certificate
 
@@ -134,6 +145,10 @@ openssl req -subj "/CN=host-c" -sha256 -new \
 cat > server-host-c-extfile.cnf <<EOF
 subjectAltName = DNS:host-c,DNS:host-c.example.com,IP:10.0.1.3,IP:127.0.0.1
 extendedKeyUsage = serverAuth
+basicConstraints = critical,CA:FALSE
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid,issuer
+keyUsage = critical,digitalSignature,keyEncipherment
 EOF
 
 openssl x509 -req -days 1825 -sha256 \
@@ -166,6 +181,10 @@ openssl req -subj "/CN=dagster-client" -new -key client-key.pem -out client.csr
 ```bash
 cat > client-extfile.cnf <<EOF
 extendedKeyUsage = clientAuth
+basicConstraints = critical,CA:FALSE
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid,issuer
+keyUsage = critical,digitalSignature
 EOF
 ```
 
@@ -445,7 +464,10 @@ cd "$OUTPUT_DIR"
 echo "=== Generating CA ==="
 openssl genrsa -aes256 -out ca-key.pem 4096
 openssl req -new -x509 -days "$CA_DAYS" -key ca-key.pem -sha256 \
-  -out ca.pem -subj "$CA_SUBJ"
+  -out ca.pem -subj "$CA_SUBJ" \
+  -addext "subjectKeyIdentifier=hash" \
+  -addext "basicConstraints=critical,CA:TRUE" \
+  -addext "keyUsage=critical,keyCertSign,cRLSign"
 
 echo ""
 echo "=== Generating Client Certificate ==="
@@ -455,6 +477,10 @@ openssl req -subj "/CN=dagster-client" -new \
 
 cat > client-extfile.cnf <<EOF
 extendedKeyUsage = clientAuth
+basicConstraints = critical,CA:FALSE
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid,issuer
+keyUsage = critical,digitalSignature
 EOF
 
 openssl x509 -req -days "$CERT_DAYS" -sha256 \
@@ -484,6 +510,10 @@ for host_entry in "${DOCKER_HOSTS[@]}"; do
   cat > "server-${name}-extfile.cnf" <<EOF
 subjectAltName = ${san}
 extendedKeyUsage = serverAuth
+basicConstraints = critical,CA:FALSE
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid,issuer
+keyUsage = critical,digitalSignature,keyEncipherment
 EOF
 
   openssl x509 -req -days "$CERT_DAYS" -sha256 \
@@ -533,6 +563,12 @@ Certificates expire. Plan for renewal before they do:
 - **Consider automation.** For larger deployments, tools like HashiCorp Vault, step-ca (smallstep), or cfssl can automate certificate issuance and renewal.
 
 ## Troubleshooting
+
+**"certificate verify failed: Missing Authority Key Identifier"**
+→ The certs were generated without the Subject/Authority Key Identifier extensions, and a strict TLS stack (OpenSSL 3.x / Python 3.13+, e.g. the Dagster daemon image) is rejecting them. The `docker` CLI (Go TLS) tolerates this, so the Step 7 CLI test can pass while the Python client fails. Regenerate the CA with `subjectKeyIdentifier=hash` and re-sign every leaf cert with `subjectKeyIdentifier=hash` + `authorityKeyIdentifier=keyid,issuer` (all included in the steps and script above). Confirm with:
+```bash
+openssl x509 -in server-host-b-cert.pem -noout -text | grep -A1 "Authority Key Identifier"
+```
 
 **"certificate signed by unknown authority"**
 → The ca.pem on the verifying side doesn't match the CA that signed the cert. Make sure the same ca.pem is on both Host A and the remote hosts.

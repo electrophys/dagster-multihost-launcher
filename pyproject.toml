@@ -26,7 +26,13 @@ dependencies = [
     "dagster>=1.6.0",
     "dagster-docker>=0.22.0",
     "docker>=7.0.0",
+    "click>=8.0",
+    "pyyaml>=6.0",
+    "rich>=13.0",
 ]
+
+[project.scripts]
+dagster-multihost = "dagster_multihost_launcher.cli:cli"
 
 [project.urls]
 Homepage = "https://github.com/isaac/dagster-multihost-launcher"

@@ -874,14 +874,18 @@ wheels = [
 
 [[package]]
 name = "dagster-multihost-launcher"
-version = "0.1.1"
+version = "0.1.2"
 source = { editable = "." }
 dependencies = [
+    { name = "click", version = "8.1.8", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
+    { name = "click", version = "8.3.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
     { name = "dagster", version = "1.12.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
     { name = "dagster", version = "1.12.14", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
     { name = "dagster-docker", version = "0.28.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
     { name = "dagster-docker", version = "0.28.14", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
     { name = "docker" },
+    { name = "pyyaml" },
+    { name = "rich" },
 ]
 
 [package.dev-dependencies]
@@ -899,9 +903,12 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "click", specifier = ">=8.0" },
     { name = "dagster", specifier = ">=1.6.0" },
     { name = "dagster-docker", specifier = ">=0.22.0" },
     { name = "docker", specifier = ">=7.0.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "rich", specifier = ">=13.0" },
 ]
 
 [package.metadata.requires-dev]
