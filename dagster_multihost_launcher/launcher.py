@@ -60,6 +60,7 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
         self,
         docker_hosts: Optional[List[Dict[str, Any]]] = None,
         default_env_vars: Optional[List[str]] = None,
+        default_env_file: Optional[str] = None,
         default_container_kwargs: Optional[Dict[str, Any]] = None,
         container_label_prefix: str = "dagster",
         inst_data: Optional[ConfigurableClassData] = None,
@@ -67,6 +68,7 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
         super().__init__()
         self._inst_data = inst_data
         self._default_env_vars = default_env_vars or []
+        self._default_env_file = default_env_file
         self._default_container_kwargs = default_container_kwargs or {}
         self._container_label_prefix = container_label_prefix
 
@@ -88,6 +90,10 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
                     "networks": host_cfg.get("networks"),
                     "container_kwargs": host_cfg.get("container_kwargs", {}),
                     "env_vars": host_cfg.get("env_vars", []),
+                    "env_file": host_cfg.get("env_file"),
+                    "inherit_env_from_container": host_cfg.get(
+                        "inherit_env_from_container"
+                    ),
                     "registry": host_cfg.get("registry"),
                 }
 
@@ -215,6 +221,27 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
                     "Format: KEY=VALUE or KEY (pulled from daemon environment)."
                 ),
             ),
+            "env_file": Field(
+                Noneable(str),
+                default_value=None,
+                is_required=False,
+                description=(
+                    "Path (on the daemon host) to a .env file whose KEY=VALUE "
+                    "lines are injected into run containers for this host. "
+                    "Overrides default_env_file; overridden by env_vars."
+                ),
+            ),
+            "inherit_env_from_container": Field(
+                Noneable(str),
+                default_value=None,
+                is_required=False,
+                description=(
+                    "Name of the code-location server container on this host to "
+                    "inherit the environment from (its Config.Env is merged into "
+                    "run containers). Supports a {location} placeholder, e.g. "
+                    "'code-{location}'. Resolved over this host's Docker client."
+                ),
+            ),
             "container_kwargs": Field(
                 Noneable(dict),
                 default_value=None,
@@ -241,6 +268,16 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
                 default_value=[],
                 is_required=False,
                 description="Env vars passed to ALL Docker run containers.",
+            ),
+            "default_env_file": Field(
+                Noneable(str),
+                default_value=None,
+                is_required=False,
+                description=(
+                    "Path (on the daemon host) to a .env file injected into ALL "
+                    "Docker run containers. Lowest precedence; a central place for "
+                    "env vars managed by an external tool (e.g. Komodo)."
+                ),
             ),
             "default_container_kwargs": Field(
                 Noneable(dict),
@@ -302,14 +339,34 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
     ) -> Dict[str, str]:
         """Build environment variables for a run container.
 
-        Merges default_env_vars + host-specific env_vars. Variables specified
-        as just KEY (no =) are pulled from the current process environment.
+        Layered from lowest to highest precedence so a central source can be
+        overridden by progressively more specific config:
+
+        1. ``default_env_file``                  — shared file for all hosts
+        2. host ``env_file``                     — per-host file
+        3. host ``inherit_env_from_container``   — the code-location server's env
+        4. ``default_env_vars`` + host ``env_vars`` — explicit KEY=VALUE / KEY
+        5. Dagster-internal vars (always set last)
+
+        Variables in ``env_vars`` given as just ``KEY`` (no ``=``) are pulled
+        from the daemon's own process environment.
         """
-        import os
+        env: Dict[str, str] = {}
 
-        env = {}
+        # 1 + 2: env files (default, then host-specific)
+        if self._default_env_file:
+            env.update(self._read_env_file(self._default_env_file))
+        host_env_file = host_info.get("env_file")
+        if host_env_file:
+            env.update(self._read_env_file(host_env_file))
+
+        # 3: inherit env from the code-location server container on this host
+        inherit_from = host_info.get("inherit_env_from_container")
+        if inherit_from:
+            env.update(self._inherit_server_env(run, host_info, inherit_from))
+
+        # 4: explicit env vars (default then host) override files/inheritance
         all_vars = self._default_env_vars + host_info.get("env_vars", [])
-
         for var in all_vars:
             if "=" in var:
                 key, val = var.split("=", 1)
@@ -319,12 +376,95 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
                 if val is not None:
                     env[var] = val
 
-        # Dagster-internal env vars the run worker needs
+        # 5: Dagster-internal env vars the run worker needs (always win)
         env["DAGSTER_RUN_JOB_NAME"] = run.job_name
         if run.run_id:
             env["DAGSTER_RUN_ID"] = run.run_id
 
         return env
+
+    @staticmethod
+    def _read_env_file(path: str) -> Dict[str, str]:
+        """Parse a .env file into a dict.
+
+        Skips blank lines and ``#`` comments, tolerates a leading ``export``,
+        splits on the first ``=``, and strips a single layer of matching quotes
+        from the value. Missing/unreadable files log a warning and yield ``{}``
+        rather than failing the run.
+        """
+        result: Dict[str, str] = {}
+        try:
+            with open(path) as f:
+                lines = f.readlines()
+        except FileNotFoundError:
+            logger.warning("env_file '%s' not found; skipping", path)
+            return result
+        except OSError as e:
+            logger.warning("Could not read env_file '%s': %s", path, e)
+            return result
+
+        for raw in lines:
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[len("export ") :].strip()
+            if "=" not in line:
+                continue
+            key, val = line.split("=", 1)
+            key = key.strip()
+            val = val.strip()
+            if len(val) >= 2 and val[0] == val[-1] and val[0] in ("'", '"'):
+                val = val[1:-1]
+            if key:
+                result[key] = val
+        return result
+
+    def _inherit_server_env(
+        self,
+        run: DagsterRun,
+        host_info: Dict[str, Any],
+        container_template: str,
+    ) -> Dict[str, str]:
+        """Read a code-location server container's environment so run containers
+        inherit whatever was injected into the server (e.g. by Komodo).
+
+        ``container_template`` may contain a ``{location}`` placeholder, which is
+        filled with this run's code location name. Failures (container missing,
+        daemon unreachable) log a warning and yield ``{}``.
+        """
+        location = self._get_location_name(run) or ""
+        container_name = container_template.format(location=location)
+        client = host_info.get("client")
+        host_name = host_info.get("host_name")
+        if client is None:
+            return {}
+
+        try:
+            container = client.containers.get(container_name)
+            env_list = container.attrs.get("Config", {}).get("Env") or []
+        except docker.errors.NotFound:
+            logger.warning(
+                "inherit_env_from_container '%s' not found on host '%s'; skipping",
+                container_name,
+                host_name,
+            )
+            return {}
+        except Exception as e:
+            logger.warning(
+                "Could not inherit env from container '%s' on host '%s': %s",
+                container_name,
+                host_name,
+                e,
+            )
+            return {}
+
+        result: Dict[str, str] = {}
+        for item in env_list:
+            if "=" in item:
+                key, val = item.split("=", 1)
+                result[key] = val
+        return result
 
     # -------------------------------------------------------------------------
     # Container labels

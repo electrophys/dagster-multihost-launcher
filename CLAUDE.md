@@ -72,6 +72,7 @@ run_launcher:
   class: MultiHostDockerRunLauncher
   config:
     default_env_vars: [...]       # Env vars for ALL run containers
+    default_env_file: "..."       # .env file (on daemon host) for ALL run containers
     default_container_kwargs: {}  # Default containers.create() kwargs
     docker_hosts:
       - host_name: "host-b"
@@ -80,9 +81,36 @@ run_launcher:
         location_names: [...]     # Code locations that run here
         network: "..."            # Docker network for containers
         env_vars: [...]           # Host-specific env vars
+        env_file: "..."           # Host-specific .env file
+        inherit_env_from_container: "code-{location}"  # inherit code-server env
         container_kwargs: {}      # Host-specific container overrides
         registry: {...}           # Optional registry credentials
 ```
+
+### Run-container environment precedence
+
+`launch_run` builds each run container's env by layering sources, lowest to
+highest precedence:
+
+1. `default_env_file` — shared `.env` for all hosts
+2. host `env_file` — per-host `.env`
+3. host `inherit_env_from_container` — the code-location server container's
+   `Config.Env` (supports a `{location}` placeholder; failures are non-fatal)
+4. `default_env_vars` + host `env_vars` — explicit `KEY=VALUE` / `KEY`
+5. Dagster-internal vars (`DAGSTER_RUN_JOB_NAME`, `DAGSTER_RUN_ID`) — always set
+
+The `env_file` sources are designed to be rendered by an external config manager
+(e.g. Komodo Variables/Secrets), giving a single central source of env vars
+shared between the long-lived stacks and the ephemeral run containers.
+
+## CLI: `dagster-multihost`
+
+A Click CLI for managing the deployment: `status`, `pull`, `deploy`, `reload`.
+
+- `dagster-multihost reload <location> [...]` reloads specific code locations
+  (`--all` reloads the whole workspace). Dagster does **not** auto-reload when a
+  remote gRPC server restarts, so call this after a remote code-location
+  container is redeployed — e.g. as a Komodo post-deploy Procedure step.
 
 ## Networking Requirements
 
