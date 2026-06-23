@@ -14,8 +14,17 @@ class DagsterGraphQLClient:
         self.graphql_url = f"{webserver_url.rstrip('/')}/graphql"
         self.timeout = timeout
 
-    def query(self, query: str, variables: Optional[Dict[str, Any]] = None) -> dict:
-        """Execute a GraphQL query/mutation."""
+    def query(
+        self,
+        query: str,
+        variables: Optional[Dict[str, Any]] = None,
+        timeout: Optional[int] = None,
+    ) -> dict:
+        """Execute a GraphQL query/mutation.
+
+        ``timeout`` overrides the client default for this call (useful for
+        long-running mutations like a code-location reload).
+        """
         payload = {"query": query}
         if variables:
             payload["variables"] = variables
@@ -25,7 +34,7 @@ class DagsterGraphQLClient:
             data=json.dumps(payload).encode("utf-8"),
             headers={"Content-Type": "application/json"},
         )
-        with urlopen(req, timeout=self.timeout) as resp:
+        with urlopen(req, timeout=timeout or self.timeout) as resp:
             result = json.loads(resp.read())
 
         if "errors" in result:
@@ -68,6 +77,35 @@ class DagsterGraphQLClient:
             "... on Workspace { locationEntries { name loadStatus } } } }"
         )
         return result["data"]["reloadWorkspace"]["locationEntries"]
+
+    def reload_location(
+        self,
+        location_name: str,
+        timeout: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Reload a single code location by name.
+
+        Returns the mutation result dict. On success ``__typename`` is
+        ``WorkspaceLocationEntry`` with ``name`` and ``loadStatus``; otherwise it
+        is an error type (e.g. ``RepositoryLocationNotFound``) with a ``message``.
+        The reload is synchronous server-side, so this can take a while for large
+        repositories — pass a generous ``timeout``.
+        """
+        result = self.query(
+            "mutation($name: String!) { "
+            "reloadRepositoryLocation(repositoryLocationName: $name) { "
+            "__typename "
+            "... on WorkspaceLocationEntry { name loadStatus "
+            "locationOrLoadError { __typename ... on PythonError { message } } } "
+            "... on ReloadNotSupported { message } "
+            "... on RepositoryLocationNotFound { message } "
+            "... on UnauthorizedError { message } "
+            "... on PythonError { message } "
+            "} }",
+            {"name": location_name},
+            timeout=timeout,
+        )
+        return result["data"]["reloadRepositoryLocation"]
 
     def wait_for_locations(
         self,

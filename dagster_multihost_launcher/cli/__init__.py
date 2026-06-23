@@ -4,6 +4,7 @@ import click
 
 from dagster_multihost_launcher.cli.deploy import deploy
 from dagster_multihost_launcher.cli.pull import pull
+from dagster_multihost_launcher.cli.reload import reload
 from dagster_multihost_launcher.cli.status import status
 
 
@@ -41,3 +42,4 @@ def cli(ctx, webserver_url, compose_file, dagster_home):
 cli.add_command(status)
 cli.add_command(pull)
 cli.add_command(deploy)
+cli.add_command(reload)
