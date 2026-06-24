@@ -122,15 +122,51 @@ with mutual TLS** on every worker. Two levels of synergy:
   `daemon.json` (enable `tcp://…:2376` + `tlsverify`) and drop the server certs. The
   painful, manual, error-prone cert distribution becomes declarative GitOps. The
   launcher is unchanged — it still dials Docker directly.
-- **4b (ambitious, needs investigation): route run-container creation through
-  Periphery** so the Docker TCP socket never has to be exposed at all. Periphery
-  already has an authenticated channel to Core and talks to each host's local Docker.
-  **Open question:** does Periphery expose a generic "create container with this
-  command + env" call usable for ephemeral, per-run workers? If yes, a
-  `transport="komodo"` mode on the launcher could replace direct `containers.create`
-  and delete the entire mTLS surface. If Periphery only exposes Stack/Deployment-level
-  operations, 4b is not viable and we stay on 4a. **Verify against the Periphery API
-  before committing to this.**
+- **4b (ambitious): route run-container creation through Periphery** so the
+  Docker TCP socket never has to be exposed at all. **Spiked — verdict: do not
+  pursue (for now).** See the spike findings below.
+
+#### Spike result: Periphery-backed launcher transport (4b)
+
+We investigated whether the launcher could create ephemeral per-run containers
+through Komodo instead of the direct Docker TCP+mTLS path. Source-verified
+against `moghtech/komodo`.
+
+- **The primitive exists.** Periphery exposes `RunContainer`, which takes a
+  *full inline* `Deployment` spec (image + command/argv + environment + labels +
+  network + ports + volumes + extra_args) and runs `docker run -d …` on the
+  host — independent of any stored Stack/Deployment resource. So conceptually a
+  per-run container *can* be expressed.
+  (`bin/periphery/src/api/container/run.rs`, `client/periphery/rs/src/api/container.rs`.)
+- **But the three transport options are all poor fits:**
+  - **(a) Core `/execute`** only deploys a *stored* Deployment by name
+    (`Deploy { deployment: String }`) — no inline image+command+env. Per-run use
+    means create+deploy+delete a DB-backed resource per run (no TTL/run-once);
+    heavyweight at thousands of runs. **Not viable as a clean primitive.**
+  - **(b) Periphery directly (`RunContainer`)** is the exact primitive, but the
+    transport is a **custom binary WebSocket with an Ed25519 PKI nonce/signature
+    handshake** and a **Rust-only** client; the caller must hold a Core-trusted
+    key (i.e. impersonate Core), and the maintainer explicitly advises against
+    exposing Periphery to external callers. Our launcher is Python — there is no
+    client, so we'd reimplement Komodo's Core handshake. Also `RunContainer`
+    shells out a `docker run` *string*, so dynamic argv/env carries shell-escaping
+    risk. **Viable but off-label and high-effort.**
+  - **(c) Docker via a Komodo tunnel** — there is **no** feature that proxies the
+    Docker Engine API over a Komodo port. The closest is the server *terminal*
+    (`ExecuteTerminal`, `CreateContainerExecTerminal`) running arbitrary
+    `docker run`, but it's a PTY stream, not a structured container API. **Only an
+    exec stream, not a tunnel.**
+- **TLS is not eliminated, only swapped.** (b)/(c) would stop exposing
+  `tcp://…:2376` with Docker mTLS, but substitute Komodo's PKI WebSocket
+  handshake — which the Python launcher would itself have to implement (the bulk
+  of the work). Net: more code, off the supported path, fragile across Komodo
+  versions, for no reduction in transport-security work.
+
+**Decision:** keep the direct Docker API transport for run execution; pursue
+**4a** (Komodo provisions/rotates the Docker certs) for the mTLS pain. Because
+the launcher keeps dialing Docker directly, Opportunity 3 retains its full scope
+(connection/TLS fields stay in `dagster.yaml`). Revisit 4b only if Komodo ships
+a supported, language-agnostic per-run container API.
 
 ### 5. Unified secrets & env injection
 
@@ -184,10 +220,13 @@ adds host stats, log retrieval, and **Alerters**. Low-effort wins:
   renders the control-plane stack `.env` (the daemon's own `env:` references).
 - [ ] **`komodo-export` / `komodo-verify` CLI subcommands** (Opportunity 3) to
   keep `dagster.yaml` and Komodo Resource Sync TOML in lockstep.
-- [ ] **TLS-via-Komodo provisioning recipe** (Opportunity 4a): move the cert
-  material into Komodo Secrets and document the GitOps `daemon.json` setup.
-- [ ] **Spike: Periphery-backed launcher transport** (Opportunity 4b) — first
-  confirm the Periphery container API supports ephemeral create.
+- [x] **Spike: Periphery-backed launcher transport** (Opportunity 4b) —
+  *Done; verdict: do not pursue.* The `RunContainer` primitive exists but is only
+  reachable over a Rust-only PKI WebSocket (Core impersonation); keep the direct
+  Docker transport. See the spike result under Opportunity 4.
+- [ ] **TLS-via-Komodo provisioning recipe** (Opportunity 4a) — now the chosen
+  path for the mTLS pain: move the cert material into Komodo Secrets and document
+  the GitOps `daemon.json` setup. The launcher stays unchanged.
 - [ ] **Komodo Procedure templates** + a scheduled cleanup Procedure and health
   Alerter (Opportunity 6).
 
