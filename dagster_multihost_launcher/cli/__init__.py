@@ -3,6 +3,7 @@
 import click
 
 from dagster_multihost_launcher.cli.check_env import check_env
+from dagster_multihost_launcher.cli.cleanup import cleanup
 from dagster_multihost_launcher.cli.deploy import deploy
 from dagster_multihost_launcher.cli.drain import drain
 from dagster_multihost_launcher.cli.komodo import komodo_export, komodo_verify
@@ -50,5 +51,6 @@ cli.add_command(reload)
 cli.add_command(drain)
 cli.add_command(restore)
 cli.add_command(check_env)
+cli.add_command(cleanup)
 cli.add_command(komodo_export)
 cli.add_command(komodo_verify)

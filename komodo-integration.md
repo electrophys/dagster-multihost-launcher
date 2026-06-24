@@ -181,15 +181,30 @@ env — eliminating the "set it on every host too" failure mode.
 
 ### 6. Monitoring & cleanup consolidation
 
-The admin assets already report container counts and prune exited run containers by
-label ([launcher.py:625-741](dagster_multihost_launcher/launcher.py#L625)). Komodo
-adds host stats, log retrieval, and **Alerters**. Low-effort wins:
+**Cleanup: keep the admin asset; Komodo is a conditional, not a default.** The
+admin asset already prunes exited run containers with precise `dagster/managed` +
+age scoping ([launcher.py:678](dagster_multihost_launcher/launcher.py#L678)) and
+gives Dagster-native run history. Komodo's generic `PruneContainers` is blunter
+(all stopped containers on a host) and its output sits outside the Dagster UI, so
+moving cleanup to Komodo is mostly a lateral step. There are only two reasons to
+involve Komodo:
 
-- Schedule the existing `cleanup_old_containers` as a Komodo **Procedure** (cron),
-  consolidating ops scheduling in one place.
-- Wire a Komodo **Alerter** on worker host/stack health so control-plane outages and
-  gRPC-server crashes page someone, complementing Dagster's per-run health checks
-  ([launcher.py:562](dagster_multihost_launcher/launcher.py#L562)).
+1. **Outage-resilience** — the admin asset runs *on* the Dagster daemon, so it
+   stops if the control plane is down; a Komodo Procedure (separate control
+   plane) keeps pruning.
+2. **Dropping the cert/remote-Docker dependency** — the asset reaches each daemon
+   over TCP+mTLS; a Komodo prune via Periphery runs over each host's local socket.
+
+If either applies, don't use Komodo's blunt prune — schedule the
+`dagster-multihost cleanup` verb, which wraps the same `cleanup_old_containers`
+logic (precise scoping) and is callable from a Dagster schedule *or* a Komodo
+Procedure. That CLI verb now exists; the choice of scheduler is config, not code.
+
+**Monitoring: the one genuine Komodo add is an Alerter.** Wire a Komodo
+**Alerter** on worker host/stack health so control-plane outages and gRPC-server
+crashes page someone, complementing Dagster's per-run health checks
+([launcher.py:562](dagster_multihost_launcher/launcher.py#L562)). This is the
+remaining open item — it's pure Komodo config, no repo code.
 
 ## Anti-patterns
 
@@ -235,8 +250,12 @@ adds host stats, log retrieval, and **Alerters**. Low-effort wins:
   a rotation/bootstrap workflow. See [`komodo/tls-provisioning.md`](komodo/tls-provisioning.md)
   + [`komodo/actions/provision-docker-tls.ts`](komodo/actions/provision-docker-tls.ts).
   The launcher is unchanged. *Done.*
-- [ ] **Komodo Procedure templates** + a scheduled cleanup Procedure and health
-  Alerter (Opportunity 6).
+- [x] **Scheduler-agnostic cleanup** (Opportunity 6) — `dagster-multihost cleanup`
+  wraps `cleanup_old_containers` (precise `dagster/managed` + age scoping), so the
+  existing admin asset stays the default but the same logic is callable from a
+  Komodo Procedure when outage-resilience or local-socket pruning is wanted. *Done.*
+- [ ] **Komodo health Alerter** (Opportunity 6, remaining) — pure Komodo config:
+  page on worker host/stack failures, complementing Dagster's per-run health checks.
 
 ## Implemented in this branch
 

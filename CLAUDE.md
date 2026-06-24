@@ -106,7 +106,7 @@ shared between the long-lived stacks and the ephemeral run containers.
 ## CLI: `dagster-multihost`
 
 A Click CLI for managing the deployment: `status`, `pull`, `deploy`, `reload`,
-`drain`, `restore`.
+`drain`, `restore`, `cleanup`, `check-env`, `komodo-export`, `komodo-verify`.
 
 - `dagster-multihost reload <location> [...]` reloads specific code locations
   (`--all` reloads the whole workspace). Dagster does **not** auto-reload when a
@@ -119,6 +119,13 @@ A Click CLI for managing the deployment: `status`, `pull`, `deploy`, `reload`,
   `drain → DeployStack → reload → restore`. The Dagster-aware core lives in
   `dagster_multihost_launcher/orchestration.py` (`WorkspaceOrchestrator`), which
   the `deploy` command also uses.
+- `dagster-multihost cleanup [--max-age-hours N] [--host X] [--dry-run]` removes
+  exited `dagster/managed` run containers older than the threshold, wrapping the
+  launcher's `cleanup_old_containers`. The scheduled admin asset
+  (`build_admin_definitions`) remains the default; this verb exposes the same
+  precise (label + age) logic so it can instead be driven by a Komodo Procedure
+  (e.g. when cleanup must survive a control-plane outage). Reaches daemons over
+  the same TCP+mTLS as the launcher, so run it where the certs live.
 - `dagster-multihost check-env [--env-file PATH]` reports env vars the control
   plane needs — every `{env: NAME}` reference in `dagster.yaml` plus the
   launcher's bare `KEY` env_vars — and which are missing. Exits non-zero if any
