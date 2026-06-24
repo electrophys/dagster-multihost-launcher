@@ -11,6 +11,7 @@ Typical setup:
 """
 
 import logging
+import re
 import time
 import os
 from typing import Any, Dict, List, Optional
@@ -45,6 +46,23 @@ TAG_LAUNCHER_TYPE = "multihost_docker/launcher_type"
 
 LAUNCHER_TYPE_DOCKER = "docker"
 LAUNCHER_TYPE_DEFAULT = "default"
+
+# Docker image reference grammar (based on distribution/reference): an optional
+# registry domain (host[:port] / IP[:port] / localhost), a lowercase repository
+# path, and an optional :tag and/or @digest. Used to reject malformed images
+# before they hit the daemon as an opaque "invalid reference format" 400.
+_REF_DOMAIN = (
+    r"(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?"
+    r"(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)+(?::[0-9]+)?"
+    r"|[a-zA-Z0-9]+:[0-9]+"
+    r"|localhost(?::[0-9]+)?)"
+)
+_REF_PATH = r"[a-z0-9]+(?:(?:[._]|__|[-]+)[a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._]|__|[-]+)[a-z0-9]+)*)*"
+_REF_TAG = r"[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}"
+_REF_DIGEST = r"[A-Za-z][A-Za-z0-9]*(?:[-_+.][A-Za-z][A-Za-z0-9]*)*:[0-9a-fA-F]{32,}"
+_IMAGE_REFERENCE_RE = re.compile(
+    rf"^(?:{_REF_DOMAIN}/)?{_REF_PATH}(?::{_REF_TAG})?(?:@{_REF_DIGEST})?$"
+)
 
 
 class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
@@ -500,14 +518,10 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
         client: docker.DockerClient = host_info["client"]
         host_name = host_info["host_name"]
 
-        # Determine image: prefer DAGSTER_CURRENT_IMAGE from the code location
-        image = run.tags.get("dagster/image") or self._resolve_image(run)
-        if not image:
-            raise Exception(
-                f"Could not determine Docker image for run {run.run_id}. "
-                "Set DAGSTER_CURRENT_IMAGE in your code location or add a "
-                "'dagster/image' tag to your job."
-            )
+        # Determine image: prefer DAGSTER_CURRENT_IMAGE from the code location.
+        # Validated up front so a malformed reference fails with an actionable
+        # message instead of Docker's opaque 400 "invalid reference format".
+        image = self._resolve_run_image(run, host_name)
 
         # Authenticate to registry if configured
         registry = host_info.get("registry")
@@ -583,7 +597,10 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
                 )
             container = client.containers.create(**create_kwargs)
         except Exception as e:
-            raise RuntimeError(f"Failed to create container on '{host_name}': {e}")
+            raise RuntimeError(
+                f"Failed to create container on '{host_name}' "
+                f"(image '{image}'): {e}"
+            )
 
         # Connect to additional networks
         for net in networks[1:]:
@@ -630,6 +647,54 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
         except Exception:
             pass
         return None
+
+    def _resolve_run_image(self, run: DagsterRun, host_name: str) -> str:
+        """Resolve and validate the Docker image for a run.
+
+        Resolution order: the ``dagster/image`` run tag, then the code
+        location's ``container_image`` (from ``DAGSTER_CURRENT_IMAGE``). The
+        result is trimmed and checked against the Docker reference grammar so a
+        malformed value (trailing newline, ``https://`` scheme, uppercase repo,
+        empty tag, …) raises a clear error here rather than surfacing as
+        Docker's opaque 400 ``invalid reference format`` at create time.
+        """
+        raw = run.tags.get("dagster/image") or self._resolve_image(run)
+        if not raw or not str(raw).strip():
+            raise Exception(
+                f"Could not determine Docker image for run {run.run_id}. "
+                "Set DAGSTER_CURRENT_IMAGE in your code location or add a "
+                "'dagster/image' tag to your job."
+            )
+
+        image = str(raw).strip()
+        self._validate_image_reference(image, run, host_name)
+        return image
+
+    @staticmethod
+    def _validate_image_reference(image: str, run: DagsterRun, host_name: str) -> None:
+        """Raise a descriptive error if ``image`` is not a valid Docker
+        reference. ``image`` is assumed already trimmed of surrounding
+        whitespace."""
+        prefix = (
+            f"Invalid Docker image reference '{image}' for run {run.run_id} "
+            f"on host '{host_name}': "
+        )
+        if "://" in image:
+            raise Exception(
+                prefix + "looks like a URL (contains '://'). Use a bare "
+                "reference such as 'registry:5000/name:tag', not a URL."
+            )
+        if any(ch.isspace() for ch in image):
+            raise Exception(
+                prefix + "contains whitespace. Check for a stray newline or "
+                "space in DAGSTER_CURRENT_IMAGE / the 'dagster/image' tag."
+            )
+        if not _IMAGE_REFERENCE_RE.match(image):
+            raise Exception(
+                prefix + "not a valid reference. Common causes: uppercase "
+                "letters in the repository name (must be lowercase), an empty "
+                "tag ('name:'), or a missing repository (':tag')."
+            )
 
     def resume_run(self, context: ResumeRunContext) -> None:
         """Resume a previously interrupted run."""
