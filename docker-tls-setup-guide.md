@@ -2,6 +2,8 @@
 
 This guide walks through securing Docker daemon TCP access with mutual TLS (mTLS) across your Dagster multi-host deployment. When complete, the Dagster daemon on Host A will authenticate to Docker daemons on Hosts B, C, etc. over encrypted connections, and those daemons will reject any client without a valid certificate.
 
+> **Automating this with Komodo.** This guide is the manual recipe. To store the cert material as Komodo Secrets and provision/rotate it via GitOps (instead of distributing certs by hand), see [komodo/tls-provisioning.md](komodo/tls-provisioning.md), which builds on the daemon.json/systemd steps below.
+
 ## Overview
 
 Mutual TLS means both sides authenticate:

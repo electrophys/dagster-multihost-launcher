@@ -230,9 +230,11 @@ adds host stats, log retrieval, and **Alerters**. Low-effort wins:
   *Done; verdict: do not pursue.* The `RunContainer` primitive exists but is only
   reachable over a Rust-only PKI WebSocket (Core impersonation); keep the direct
   Docker transport. See the spike result under Opportunity 4.
-- [ ] **TLS-via-Komodo provisioning recipe** (Opportunity 4a) — now the chosen
-  path for the mTLS pain: move the cert material into Komodo Secrets and document
-  the GitOps `daemon.json` setup. The launcher stays unchanged.
+- [x] **TLS-via-Komodo provisioning recipe** (Opportunity 4a) — cert material as
+  Komodo Secrets, an Action that configures dockerd's `tcp://…:2376` endpoint, and
+  a rotation/bootstrap workflow. See [`komodo/tls-provisioning.md`](komodo/tls-provisioning.md)
+  + [`komodo/actions/provision-docker-tls.ts`](komodo/actions/provision-docker-tls.ts).
+  The launcher is unchanged. *Done.*
 - [ ] **Komodo Procedure templates** + a scheduled cleanup Procedure and health
   Alerter (Opportunity 6).
 

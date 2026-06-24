@@ -18,6 +18,10 @@ shipped CLI verbs (`drain`, `reload`, `restore`, `check-env`,
 - [`actions/safe-deploy.ts`](actions/safe-deploy.ts) — a Komodo **Action**
   (TypeScript, runs in Core) that orchestrates
   `drain → DeployStack → reload → restore` for one code location.
+- [`tls-provisioning.md`](tls-provisioning.md) + [`actions/provision-docker-tls.ts`](actions/provision-docker-tls.ts)
+  — automate the Docker mutual-TLS cert lifecycle (store certs as Komodo Secrets,
+  configure dockerd's `tcp://…:2376` endpoint, rotate) instead of distributing
+  certs by hand.
 
 ## The rollout
 

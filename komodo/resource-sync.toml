@@ -18,6 +18,20 @@
 name = "ETL_IMAGE"
 value = "ghcr.io/acme/etl:0.4.2"   # a pinned tag — set from the build below
 
+# Docker mTLS cert material (see tls-provisioning.md). Mark the *_KEY vars
+# secret; keep the full multi-line PEM as the value. The CA *private* key stays
+# offline — never in Komodo. The provision-docker-tls action interpolates these.
+# [[variable]]
+# name = "CA_PEM"
+# value = "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----"
+# [[variable]]
+# name = "HOST_B_SERVER_CERT"
+# value = "..."
+# [[variable]]
+# name = "HOST_B_SERVER_KEY"
+# is_secret = true
+# value = "..."
+
 # -- Build: pin the code-location image --------------------------------------
 
 [[build]]
