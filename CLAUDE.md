@@ -119,6 +119,19 @@ A Click CLI for managing the deployment: `status`, `pull`, `deploy`, `reload`,
   `drain → DeployStack → reload → restore`. The Dagster-aware core lives in
   `dagster_multihost_launcher/orchestration.py` (`WorkspaceOrchestrator`), which
   the `deploy` command also uses.
+- `dagster-multihost check-env [--env-file PATH]` reports env vars the control
+  plane needs — every `{env: NAME}` reference in `dagster.yaml` plus the
+  launcher's bare `KEY` env_vars — and which are missing. Exits non-zero if any
+  are. The launcher's `env_file`/inheritance only feeds *run containers*; the
+  daemon/webserver's own env (e.g. Postgres creds) must be rendered into the
+  control-plane stack (e.g. via Komodo Variables). Use as a pre-deploy gate.
+- `dagster-multihost komodo-export [-o FILE]` generates a Komodo Resource Sync
+  TOML skeleton (servers + stacks) from `dagster.yaml`. `komodo-verify <TOML>`
+  diffs `dagster.yaml` topology against that TOML and exits non-zero on drift —
+  a host or code location missing from / misplaced in Komodo would otherwise
+  silently fall back to the DefaultRunLauncher. Convention: `[[server]]` name ==
+  `host_name`, `[[stack]]` name == code location name, stack `server` == its host.
+  Example artifacts live in [`komodo/`](komodo/).
 
 ### Run image resolution & validation
 
