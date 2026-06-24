@@ -215,11 +215,17 @@ adds host stats, log retrieval, and **Alerters**. Low-effort wins:
   reload → restore` with state-file handoff and rollback-on-timeout. *Done.*
 - [x] **Image pinning + preflight validation** (Opportunity 1) — image trimmed
   and validated; convention documented. *Done.*
-- [ ] **Close the control-plane env seam** (Opportunity 5 follow-up): the
-  `env_file` sources feed *run containers*; document/verify that Komodo also
-  renders the control-plane stack `.env` (the daemon's own `env:` references).
-- [ ] **`komodo-export` / `komodo-verify` CLI subcommands** (Opportunity 3) to
-  keep `dagster.yaml` and Komodo Resource Sync TOML in lockstep.
+- [x] **Close the control-plane env seam** (Opportunity 5 follow-up) — the
+  `env_file` sources feed *run containers*; `dagster-multihost check-env` now
+  surfaces the daemon's own required env (`{env: NAME}` refs + bare `KEY`
+  env_vars) and fails on missing ones. Komodo renders these into the
+  control-plane stack `.env`. *Done.*
+- [x] **`komodo-export` / `komodo-verify` CLI subcommands** (Opportunity 3) —
+  generate the Resource Sync TOML skeleton from `dagster.yaml` and fail on
+  topology drift (`komodo_sync.py`). *Done.*
+- [x] **Komodo wiring artifacts** — `komodo/` holds an example Resource Sync
+  TOML and a `safe-deploy` Action (`drain → DeployStack → reload → restore`)
+  that exercises the verbs above. *Done.*
 - [x] **Spike: Periphery-backed launcher transport** (Opportunity 4b) —
   *Done; verdict: do not pursue.* The `RunContainer` primitive exists but is only
   reachable over a Rust-only PKI WebSocket (Core impersonation); keep the direct
