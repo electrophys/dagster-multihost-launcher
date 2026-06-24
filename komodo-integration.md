@@ -172,48 +172,79 @@ adds host stats, log retrieval, and **Alerters**. Low-effort wins:
 
 ## Recommended roadmap for this branch
 
-1. **Refactor the CLI deploy phases into an importable library** (decouple from
-   `click`) so Komodo Actions/Procedures can call drain/restore/health directly.
-   *Prereq for Opportunities 2.*
-2. **Image-pinning convention + docs** (Opportunity 1): document the Komodo Build →
-   `DAGSTER_CURRENT_IMAGE` Variable → gRPC server flow; optionally add a CLI check
-   that warns when a code location's reported image isn't a pinned tag.
-3. **`komodo-export` / `komodo-verify` CLI subcommands** (Opportunity 3) to keep
-   `dagster.yaml` and Komodo Resource Sync TOML in lockstep.
-4. **TLS-via-Komodo provisioning recipe** (Opportunity 4a): move the cert material
-   into Komodo Secrets and document the GitOps `daemon.json` setup.
-5. **Spike: Periphery-backed launcher transport** (Opportunity 4b) — first confirm
-   the Periphery container API supports ephemeral create; only then design the mode.
-6. **Komodo Procedure templates** for the full build → drain → deploy → verify
-   rollout, plus a scheduled cleanup Procedure and health Alerter.
+- [x] **Reusable orchestration library** (Opportunity 2 prereq) — `drain`/
+  `restore`/`reload` decoupled from `click` into `orchestration.py`; `deploy`
+  reuses it. *Done.*
+- [x] **Safe multi-host deploy verbs** (Opportunity 2) — `drain → deploy →
+  reload → restore` with state-file handoff and rollback-on-timeout. *Done.*
+- [x] **Image pinning + preflight validation** (Opportunity 1) — image trimmed
+  and validated; convention documented. *Done.*
+- [ ] **Close the control-plane env seam** (Opportunity 5 follow-up): the
+  `env_file` sources feed *run containers*; document/verify that Komodo also
+  renders the control-plane stack `.env` (the daemon's own `env:` references).
+- [ ] **`komodo-export` / `komodo-verify` CLI subcommands** (Opportunity 3) to
+  keep `dagster.yaml` and Komodo Resource Sync TOML in lockstep.
+- [ ] **TLS-via-Komodo provisioning recipe** (Opportunity 4a): move the cert
+  material into Komodo Secrets and document the GitOps `daemon.json` setup.
+- [ ] **Spike: Periphery-backed launcher transport** (Opportunity 4b) — first
+  confirm the Periphery container API supports ephemeral create.
+- [ ] **Komodo Procedure templates** + a scheduled cleanup Procedure and health
+  Alerter (Opportunity 6).
 
 ## Implemented in this branch
 
-### Reload on remote container update (Opportunity 2, reload half)
+### Image pinning + preflight validation (Opportunity 1)
 
-Dagster does **not** reload a code location when its gRPC server restarts behind
-the same host:port, so the reload must be triggered externally — and Komodo is
-the thing that just did the redeploy.
+`launch_run` now resolves the run image (`dagster/image` tag → code location's
+`container_image`), **trims it, and validates it against the Docker reference
+grammar** before calling the daemon (`_resolve_run_image` /
+`_validate_image_reference` / `_IMAGE_REFERENCE_RE`). A trailing newline, a
+`https://` scheme, an uppercase repository, or an empty tag now fail with a
+clear, host-named error instead of Docker's opaque 400 `invalid reference
+format`.
 
-- `DagsterGraphQLClient.reload_location(name)` calls the targeted
-  `reloadRepositoryLocation` mutation (the existing `reload_workspace` reloads
-  *all* locations).
-- `dagster-multihost reload <location> [...]` (`--all` for the whole workspace)
-  drives it from the command line.
+**Komodo wiring** — have a Komodo **Build** tag the image deterministically
+(commit SHA / semver, never `:latest`) and set `DAGSTER_CURRENT_IMAGE` to that
+tag on the code-location Stack (via a `[[VAR]]`). Dagster reports it as the
+location's `container_image`, so the gRPC server and every run container the
+launcher spawns use the *identical* pinned image — reproducible deploys, and the
+malformed-image class of failure is gone.
 
-**Komodo wiring** — make the redeploy a Procedure whose final stage reloads the
-location that changed, e.g. on Host A's Periphery (which can reach the webserver):
+### Safe deploy orchestration (Opportunity 2)
+
+The Dagster-aware quiesce/restore logic is now a CLI-free library —
+`WorkspaceOrchestrator` in `dagster_multihost_launcher/orchestration.py` (built
+only on the GraphQL client) — so an external orchestrator can drive a safe
+rollout. Three CLI verbs expose it:
+
+- `dagster-multihost drain <location> --state-file PATH` — stop running
+  schedules/sensors, wait for active runs to finish, and record what was stopped.
+  On timeout without `--force` it restarts what it stopped and exits non-zero, so
+  the Procedure halts *before* any redeploy.
+- `dagster-multihost reload <location>` — targeted `reloadRepositoryLocation`
+  (Dagster does not auto-reload a restarted gRPC server). `--all` reloads the
+  whole workspace.
+- `dagster-multihost restore --state-file PATH` — re-enable exactly the
+  instigators `drain` recorded.
+
+The `deploy` command reuses the same `WorkspaceOrchestrator`, so local and
+Komodo-driven rollouts share one implementation.
+
+**Komodo wiring** — a Procedure stages these around the multi-host stack deploy
+(stages run sequentially; non-zero exit halts the Procedure → natural rollback
+gate):
 
 ```
 Procedure: deploy-code-loc-b
-  Stage 1  DeployStack   code-loc-b
-  Stage 2  <run on Host A>  dagster-multihost reload etl_pipelines
+  Stage 1  <Host A>  dagster-multihost drain etl_pipelines --state-file /tmp/etl.json --timeout 600
+  Stage 2  DeployStack   code-loc-b
+  Stage 3  <Host A>  dagster-multihost reload etl_pipelines
+  Stage 4  <Host A>  dagster-multihost restore --state-file /tmp/etl.json
 ```
 
-The Stage-2 execution can be a Periphery-run Repo script, or a Komodo Action
-(TypeScript) that POSTs the `reloadRepositoryLocation` mutation to the webserver
-directly. Trigger the whole Procedure from the same git push (webhook) that built
-the new image.
+Stages 1/3/4 run on Host A's Periphery (it can reach the webserver) or as a
+Komodo Action. Trigger the whole Procedure from the same git push (webhook) that
+built the new image.
 
 ### Central env management (Opportunity 5)
 

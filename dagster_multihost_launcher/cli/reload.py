@@ -9,7 +9,7 @@ Procedure step running ``dagster-multihost reload <location>``).
 import click
 from rich.console import Console
 
-from dagster_multihost_launcher.cli.graphql_client import DagsterGraphQLClient
+from dagster_multihost_launcher.graphql_client import DagsterGraphQLClient
 
 
 def _print_entries(console: Console, entries) -> None:

@@ -14,17 +14,11 @@ from dagster_multihost_launcher.cli.config import (
     ServiceInfo,
     load_config,
 )
-from dagster_multihost_launcher.cli.graphql_client import DagsterGraphQLClient
-
-
-@dataclass
-class SavedInstigator:
-    """A schedule or sensor that was running before deployment."""
-
-    kind: str  # "schedule" or "sensor"
-    name: str
-    repository_name: str
-    location_name: str
+from dagster_multihost_launcher.graphql_client import DagsterGraphQLClient
+from dagster_multihost_launcher.orchestration import (
+    SavedInstigator,
+    WorkspaceOrchestrator,
+)
 
 
 @dataclass
@@ -202,58 +196,18 @@ def phase_drain(
         console.print("  No code locations to drain (control plane only).")
         return True
 
+    orch = WorkspaceOrchestrator(client, log=lambda m: console.print(f"    {m}"))
+
     for loc_name in sorted(all_locations):
         console.print(f"\n  [cyan]Draining: {loc_name}[/cyan]")
 
-        # Stop schedules
+        # Stop running schedules and sensors (recorded for later restore)
         try:
-            schedules = client.get_schedules(loc_name)
-            for sched in schedules:
-                sched_state = sched.get("scheduleState", {}).get("status")
-                if sched_state == "RUNNING":
-                    repo = sched["repositoryOrigin"]
-                    console.print(f"    Stopping schedule: {sched['name']}")
-                    client.stop_schedule(
-                        sched["name"],
-                        repo["repositoryName"],
-                        repo["repositoryLocationName"],
-                    )
-                    state.stopped_instigators.append(
-                        SavedInstigator(
-                            kind="schedule",
-                            name=sched["name"],
-                            repository_name=repo["repositoryName"],
-                            location_name=repo["repositoryLocationName"],
-                        )
-                    )
+            state.stopped_instigators.extend(orch.stop_instigators(loc_name))
         except Exception as e:
             console.print(
-                f"    [yellow]Warning: could not query schedules: {e}[/yellow]"
+                f"    [yellow]Warning: could not stop instigators: {e}[/yellow]"
             )
-
-        # Stop sensors
-        try:
-            sensors = client.get_sensors(loc_name)
-            for sensor in sensors:
-                sensor_state = sensor.get("sensorState", {}).get("status")
-                if sensor_state == "RUNNING":
-                    repo = sensor["repositoryOrigin"]
-                    console.print(f"    Stopping sensor: {sensor['name']}")
-                    client.stop_sensor(
-                        sensor["name"],
-                        repo["repositoryName"],
-                        repo["repositoryLocationName"],
-                    )
-                    state.stopped_instigators.append(
-                        SavedInstigator(
-                            kind="sensor",
-                            name=sensor["name"],
-                            repository_name=repo["repositoryName"],
-                            location_name=repo["repositoryLocationName"],
-                        )
-                    )
-        except Exception as e:
-            console.print(f"    [yellow]Warning: could not query sensors: {e}[/yellow]")
 
         # Wait for active runs
         console.print(
@@ -408,35 +362,10 @@ def phase_restore(
         console.print("  Nothing to restore.")
         return True
 
-    all_ok = True
-    for instigator in state.stopped_instigators:
-        console.print(
-            f"  Starting {instigator.kind}: "
-            f"[cyan]{instigator.name}[/cyan] ({instigator.location_name})"
-        )
-        try:
-            if instigator.kind == "schedule":
-                ok = client.start_schedule(
-                    instigator.name,
-                    instigator.repository_name,
-                    instigator.location_name,
-                )
-            else:
-                ok = client.start_sensor(
-                    instigator.name,
-                    instigator.repository_name,
-                    instigator.location_name,
-                )
-
-            if ok:
-                console.print("    [green]Started[/green]")
-            else:
-                console.print("    [yellow]May not have started correctly[/yellow]")
-                all_ok = False
-        except Exception as e:
-            console.print(f"    [red]Failed: {e}[/red]")
-            all_ok = False
-
+    orch = WorkspaceOrchestrator(client, log=lambda m: console.print(f"  {m}"))
+    all_ok = orch.restart_instigators(state.stopped_instigators)
+    if not all_ok:
+        console.print("  [yellow]Some instigators may not have restarted[/yellow]")
     return all_ok
 
 

@@ -105,12 +105,33 @@ shared between the long-lived stacks and the ephemeral run containers.
 
 ## CLI: `dagster-multihost`
 
-A Click CLI for managing the deployment: `status`, `pull`, `deploy`, `reload`.
+A Click CLI for managing the deployment: `status`, `pull`, `deploy`, `reload`,
+`drain`, `restore`.
 
 - `dagster-multihost reload <location> [...]` reloads specific code locations
   (`--all` reloads the whole workspace). Dagster does **not** auto-reload when a
   remote gRPC server restarts, so call this after a remote code-location
   container is redeployed — e.g. as a Komodo post-deploy Procedure step.
+- `dagster-multihost drain <location> [...] --state-file PATH` stops the
+  location's running schedules/sensors and waits for active runs to finish,
+  recording what it stopped. `restore --state-file PATH` re-enables exactly
+  those. These let an external orchestrator wrap a remote redeploy safely:
+  `drain → DeployStack → reload → restore`. The Dagster-aware core lives in
+  `dagster_multihost_launcher/orchestration.py` (`WorkspaceOrchestrator`), which
+  the `deploy` command also uses.
+
+### Run image resolution & validation
+
+`launch_run` resolves each run's image from the `dagster/image` tag, else the
+code location's `container_image` (from `DAGSTER_CURRENT_IMAGE`). The value is
+trimmed and validated against the Docker reference grammar, so a malformed image
+(trailing newline, `https://` scheme, uppercase repository, empty tag) fails
+with a clear error instead of Docker's opaque 400 `invalid reference format`.
+
+**Pin images via the build tool.** Have your image build (e.g. a Komodo Build)
+set `DAGSTER_CURRENT_IMAGE` on the code-location server to a deterministic tag
+(commit SHA or semver, not `:latest`). The gRPC server and the run containers it
+spawns then use the identical pinned image, and deployments are reproducible.
 
 ## Networking Requirements
 
