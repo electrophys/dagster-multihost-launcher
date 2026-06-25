@@ -5,6 +5,9 @@
 > plane and the remote code-location hosts (as Docker Compose stacks), and define
 > how `MultiHostDockerRunLauncher` and the `dagster-multihost` CLI should fit into
 > that world.
+>
+> **Want to set it up?** This is the *why*. For the step-by-step *how*, see the
+> [Komodo + Dagster Setup & Configuration Guide](komodo-dagster-setup-guide.md).
 
 ## TL;DR
 
@@ -24,15 +27,15 @@ orchestration, config single-sourcing, and secret/cert handling.
 ## Architecture: how the layers fit
 
 ```
-                    ┌──────────────────────── Komodo Core (UI + RPC API + GitOps) ──────────────────────┐
+                    ┌──────────────────────── Komodo Core (UI + RPC API + GitOps) ────────────────────────┐
                     │  Stacks · Builds · Procedures · Resource Sync (TOML) · Variables/Secrets · Alerters │
-                    └───────────┬───────────────────────────┬───────────────────────────┬───────────────┘
-                       Periphery│                   Periphery│                   Periphery│
-                    ┌───────────▼──────────┐      ┌──────────▼──────────┐     ┌──────────▼──────────┐
-                    │ Host A (control plane)│      │ Host B (worker)     │     │ Host C (worker)     │
-                    │  Stack: webserver,    │      │  Stack: code-loc    │     │  Stack: code-loc    │
-                    │  daemon, postgres     │      │  gRPC server        │     │  gRPC server        │
-                    └───────────┬──────────┘      └──────────▲──────────┘     └──────────▲──────────┘
+                    └───────────┬───────────────────────────┬───────────────────────────┬─────────────────┘
+                       Periphery│                  Periphery│                  Periphery│
+                    ┌───────────▼───────────┐     ┌──────────▼──────────┐     ┌──────────▼──────────┐
+                    │ Host A (control plane)│     │ Host B (worker)     │     │ Host C (worker)     │
+                    │  Stack: webserver,    │     │  Stack: code-loc    │     │  Stack: code-loc    │
+                    │  daemon, postgres     │     │  gRPC server        │     │  gRPC server        │
+                    └───────────┬───────────┘     └──────────▲──────────┘     └──────────▲──────────┘
                                 │ daemon hosts the launcher              run containers (ephemeral)
                                 │  MultiHostDockerRunLauncher ───────────┴──── Docker TCP+mTLS :2376 ──┘
                                 ▼

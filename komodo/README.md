@@ -4,6 +4,10 @@ Example/templated artifacts that wire Komodo to this launcher. They turn the
 shipped CLI verbs (`drain`, `reload`, `restore`, `check-env`,
 `komodo-export`/`komodo-verify`) into an actual safe rollout.
 
+> New here? Start with the end-to-end
+> [Komodo + Dagster Setup & Configuration Guide](../komodo-dagster-setup-guide.md);
+> these files are the artifacts it references.
+
 > These are **starting points to adapt**, not drop-in files. Komodo's exact TOML
 > fields and Action client signatures vary by version — confirm against your
 > Komodo docs. Nothing here runs in CI.

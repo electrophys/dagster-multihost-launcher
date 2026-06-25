@@ -133,6 +133,13 @@ run_launcher:
 | `container_kwargs` | dict | no | Host-specific `containers.create()` kwargs |
 | `registry` | dict | no | Registry credentials (url, username, password) |
 
+## Deploying with Komodo
+
+To run this under [Komodo](https://komo.do/) (deploying the control plane and
+code-location stacks, with safe rollouts), see the end-to-end
+[Komodo + Dagster Setup & Configuration Guide](komodo-dagster-setup-guide.md) and
+the design rationale in [komodo-integration.md](komodo-integration.md).
+
 ## Setting Up Remote Docker Daemons
 
 Each remote host needs its Docker daemon exposed over TCP with TLS.
