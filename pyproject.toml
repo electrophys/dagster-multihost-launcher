@@ -45,8 +45,8 @@ dev = [
     "pytest",
     "dagster[test]",
     "pre-commit",
-    "black",
-    "ruff",
+    "black==25.1.0",
+    "ruff==0.9.6",
 ]
 
 [tool.setuptools.packages.find]
