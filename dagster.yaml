@@ -22,6 +22,11 @@ run_launcher:
       - DAGSTER_POSTGRES_HOST
       - DAGSTER_POSTGRES_PORT
 
+    # Central .env file (on this host) injected into ALL run containers.
+    # Lowest precedence — a single place for env managed by an external tool
+    # such as Komodo, which renders its Variables/Secrets into this file.
+    default_env_file: "/etc/dagster/shared.env"
+
     # Default container kwargs applied to all Docker hosts
     default_container_kwargs:
       auto_remove: false
@@ -49,6 +54,12 @@ run_launcher:
         network: "host_b_dagster_network"
         env_vars:
           - "WAREHOUSE_HOST=10.0.1.50"
+        # Per-host .env file (overrides default_env_file, below env_vars).
+        env_file: "/etc/dagster/host-b.env"
+        # Inherit the code-location server's own environment so run containers
+        # match it exactly. {location} is filled with the run's code location
+        # name (e.g. the "etl_pipelines" server container "code-etl_pipelines").
+        inherit_env_from_container: "code-{location}"
 
       # Host C: runs analytics code locations
       - host_name: "host-c"

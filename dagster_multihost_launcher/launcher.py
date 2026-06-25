@@ -11,6 +11,7 @@ Typical setup:
 """
 
 import logging
+import re
 import time
 import os
 from typing import Any, Dict, List, Optional
@@ -46,6 +47,23 @@ TAG_LAUNCHER_TYPE = "multihost_docker/launcher_type"
 LAUNCHER_TYPE_DOCKER = "docker"
 LAUNCHER_TYPE_DEFAULT = "default"
 
+# Docker image reference grammar (based on distribution/reference): an optional
+# registry domain (host[:port] / IP[:port] / localhost), a lowercase repository
+# path, and an optional :tag and/or @digest. Used to reject malformed images
+# before they hit the daemon as an opaque "invalid reference format" 400.
+_REF_DOMAIN = (
+    r"(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?"
+    r"(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)+(?::[0-9]+)?"
+    r"|[a-zA-Z0-9]+:[0-9]+"
+    r"|localhost(?::[0-9]+)?)"
+)
+_REF_PATH = r"[a-z0-9]+(?:(?:[._]|__|[-]+)[a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._]|__|[-]+)[a-z0-9]+)*)*"
+_REF_TAG = r"[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}"
+_REF_DIGEST = r"[A-Za-z][A-Za-z0-9]*(?:[-_+.][A-Za-z][A-Za-z0-9]*)*:[0-9a-fA-F]{32,}"
+_IMAGE_REFERENCE_RE = re.compile(
+    rf"^(?:{_REF_DOMAIN}/)?{_REF_PATH}(?::{_REF_TAG})?(?:@{_REF_DIGEST})?$"
+)
+
 
 class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
     """A composite run launcher that routes runs to remote Docker daemons
@@ -60,6 +78,7 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
         self,
         docker_hosts: Optional[List[Dict[str, Any]]] = None,
         default_env_vars: Optional[List[str]] = None,
+        default_env_file: Optional[str] = None,
         default_container_kwargs: Optional[Dict[str, Any]] = None,
         container_label_prefix: str = "dagster",
         inst_data: Optional[ConfigurableClassData] = None,
@@ -67,6 +86,7 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
         super().__init__()
         self._inst_data = inst_data
         self._default_env_vars = default_env_vars or []
+        self._default_env_file = default_env_file
         self._default_container_kwargs = default_container_kwargs or {}
         self._container_label_prefix = container_label_prefix
 
@@ -88,6 +108,10 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
                     "networks": host_cfg.get("networks"),
                     "container_kwargs": host_cfg.get("container_kwargs", {}),
                     "env_vars": host_cfg.get("env_vars", []),
+                    "env_file": host_cfg.get("env_file"),
+                    "inherit_env_from_container": host_cfg.get(
+                        "inherit_env_from_container"
+                    ),
                     "registry": host_cfg.get("registry"),
                 }
 
@@ -215,6 +239,27 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
                     "Format: KEY=VALUE or KEY (pulled from daemon environment)."
                 ),
             ),
+            "env_file": Field(
+                Noneable(str),
+                default_value=None,
+                is_required=False,
+                description=(
+                    "Path (on the daemon host) to a .env file whose KEY=VALUE "
+                    "lines are injected into run containers for this host. "
+                    "Overrides default_env_file; overridden by env_vars."
+                ),
+            ),
+            "inherit_env_from_container": Field(
+                Noneable(str),
+                default_value=None,
+                is_required=False,
+                description=(
+                    "Name of the code-location server container on this host to "
+                    "inherit the environment from (its Config.Env is merged into "
+                    "run containers). Supports a {location} placeholder, e.g. "
+                    "'code-{location}'. Resolved over this host's Docker client."
+                ),
+            ),
             "container_kwargs": Field(
                 Noneable(dict),
                 default_value=None,
@@ -241,6 +286,16 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
                 default_value=[],
                 is_required=False,
                 description="Env vars passed to ALL Docker run containers.",
+            ),
+            "default_env_file": Field(
+                Noneable(str),
+                default_value=None,
+                is_required=False,
+                description=(
+                    "Path (on the daemon host) to a .env file injected into ALL "
+                    "Docker run containers. Lowest precedence; a central place for "
+                    "env vars managed by an external tool (e.g. Komodo)."
+                ),
             ),
             "default_container_kwargs": Field(
                 Noneable(dict),
@@ -302,14 +357,34 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
     ) -> Dict[str, str]:
         """Build environment variables for a run container.
 
-        Merges default_env_vars + host-specific env_vars. Variables specified
-        as just KEY (no =) are pulled from the current process environment.
+        Layered from lowest to highest precedence so a central source can be
+        overridden by progressively more specific config:
+
+        1. ``default_env_file``                  — shared file for all hosts
+        2. host ``env_file``                     — per-host file
+        3. host ``inherit_env_from_container``   — the code-location server's env
+        4. ``default_env_vars`` + host ``env_vars`` — explicit KEY=VALUE / KEY
+        5. Dagster-internal vars (always set last)
+
+        Variables in ``env_vars`` given as just ``KEY`` (no ``=``) are pulled
+        from the daemon's own process environment.
         """
-        import os
+        env: Dict[str, str] = {}
 
-        env = {}
+        # 1 + 2: env files (default, then host-specific)
+        if self._default_env_file:
+            env.update(self._read_env_file(self._default_env_file))
+        host_env_file = host_info.get("env_file")
+        if host_env_file:
+            env.update(self._read_env_file(host_env_file))
+
+        # 3: inherit env from the code-location server container on this host
+        inherit_from = host_info.get("inherit_env_from_container")
+        if inherit_from:
+            env.update(self._inherit_server_env(run, host_info, inherit_from))
+
+        # 4: explicit env vars (default then host) override files/inheritance
         all_vars = self._default_env_vars + host_info.get("env_vars", [])
-
         for var in all_vars:
             if "=" in var:
                 key, val = var.split("=", 1)
@@ -319,12 +394,95 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
                 if val is not None:
                     env[var] = val
 
-        # Dagster-internal env vars the run worker needs
+        # 5: Dagster-internal env vars the run worker needs (always win)
         env["DAGSTER_RUN_JOB_NAME"] = run.job_name
         if run.run_id:
             env["DAGSTER_RUN_ID"] = run.run_id
 
         return env
+
+    @staticmethod
+    def _read_env_file(path: str) -> Dict[str, str]:
+        """Parse a .env file into a dict.
+
+        Skips blank lines and ``#`` comments, tolerates a leading ``export``,
+        splits on the first ``=``, and strips a single layer of matching quotes
+        from the value. Missing/unreadable files log a warning and yield ``{}``
+        rather than failing the run.
+        """
+        result: Dict[str, str] = {}
+        try:
+            with open(path) as f:
+                lines = f.readlines()
+        except FileNotFoundError:
+            logger.warning("env_file '%s' not found; skipping", path)
+            return result
+        except OSError as e:
+            logger.warning("Could not read env_file '%s': %s", path, e)
+            return result
+
+        for raw in lines:
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[len("export ") :].strip()
+            if "=" not in line:
+                continue
+            key, val = line.split("=", 1)
+            key = key.strip()
+            val = val.strip()
+            if len(val) >= 2 and val[0] == val[-1] and val[0] in ("'", '"'):
+                val = val[1:-1]
+            if key:
+                result[key] = val
+        return result
+
+    def _inherit_server_env(
+        self,
+        run: DagsterRun,
+        host_info: Dict[str, Any],
+        container_template: str,
+    ) -> Dict[str, str]:
+        """Read a code-location server container's environment so run containers
+        inherit whatever was injected into the server (e.g. by Komodo).
+
+        ``container_template`` may contain a ``{location}`` placeholder, which is
+        filled with this run's code location name. Failures (container missing,
+        daemon unreachable) log a warning and yield ``{}``.
+        """
+        location = self._get_location_name(run) or ""
+        container_name = container_template.format(location=location)
+        client = host_info.get("client")
+        host_name = host_info.get("host_name")
+        if client is None:
+            return {}
+
+        try:
+            container = client.containers.get(container_name)
+            env_list = container.attrs.get("Config", {}).get("Env") or []
+        except docker.errors.NotFound:
+            logger.warning(
+                "inherit_env_from_container '%s' not found on host '%s'; skipping",
+                container_name,
+                host_name,
+            )
+            return {}
+        except Exception as e:
+            logger.warning(
+                "Could not inherit env from container '%s' on host '%s': %s",
+                container_name,
+                host_name,
+                e,
+            )
+            return {}
+
+        result: Dict[str, str] = {}
+        for item in env_list:
+            if "=" in item:
+                key, val = item.split("=", 1)
+                result[key] = val
+        return result
 
     # -------------------------------------------------------------------------
     # Container labels
@@ -360,14 +518,10 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
         client: docker.DockerClient = host_info["client"]
         host_name = host_info["host_name"]
 
-        # Determine image: prefer DAGSTER_CURRENT_IMAGE from the code location
-        image = run.tags.get("dagster/image") or self._resolve_image(run)
-        if not image:
-            raise Exception(
-                f"Could not determine Docker image for run {run.run_id}. "
-                "Set DAGSTER_CURRENT_IMAGE in your code location or add a "
-                "'dagster/image' tag to your job."
-            )
+        # Determine image: prefer DAGSTER_CURRENT_IMAGE from the code location.
+        # Validated up front so a malformed reference fails with an actionable
+        # message instead of Docker's opaque 400 "invalid reference format".
+        image = self._resolve_run_image(run, host_name)
 
         # Authenticate to registry if configured
         registry = host_info.get("registry")
@@ -443,7 +597,10 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
                 )
             container = client.containers.create(**create_kwargs)
         except Exception as e:
-            raise RuntimeError(f"Failed to create container on '{host_name}': {e}")
+            raise RuntimeError(
+                f"Failed to create container on '{host_name}' "
+                f"(image '{image}'): {e}"
+            )
 
         # Connect to additional networks
         for net in networks[1:]:
@@ -490,6 +647,54 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
         except Exception:
             pass
         return None
+
+    def _resolve_run_image(self, run: DagsterRun, host_name: str) -> str:
+        """Resolve and validate the Docker image for a run.
+
+        Resolution order: the ``dagster/image`` run tag, then the code
+        location's ``container_image`` (from ``DAGSTER_CURRENT_IMAGE``). The
+        result is trimmed and checked against the Docker reference grammar so a
+        malformed value (trailing newline, ``https://`` scheme, uppercase repo,
+        empty tag, …) raises a clear error here rather than surfacing as
+        Docker's opaque 400 ``invalid reference format`` at create time.
+        """
+        raw = run.tags.get("dagster/image") or self._resolve_image(run)
+        if not raw or not str(raw).strip():
+            raise Exception(
+                f"Could not determine Docker image for run {run.run_id}. "
+                "Set DAGSTER_CURRENT_IMAGE in your code location or add a "
+                "'dagster/image' tag to your job."
+            )
+
+        image = str(raw).strip()
+        self._validate_image_reference(image, run, host_name)
+        return image
+
+    @staticmethod
+    def _validate_image_reference(image: str, run: DagsterRun, host_name: str) -> None:
+        """Raise a descriptive error if ``image`` is not a valid Docker
+        reference. ``image`` is assumed already trimmed of surrounding
+        whitespace."""
+        prefix = (
+            f"Invalid Docker image reference '{image}' for run {run.run_id} "
+            f"on host '{host_name}': "
+        )
+        if "://" in image:
+            raise Exception(
+                prefix + "looks like a URL (contains '://'). Use a bare "
+                "reference such as 'registry:5000/name:tag', not a URL."
+            )
+        if any(ch.isspace() for ch in image):
+            raise Exception(
+                prefix + "contains whitespace. Check for a stray newline or "
+                "space in DAGSTER_CURRENT_IMAGE / the 'dagster/image' tag."
+            )
+        if not _IMAGE_REFERENCE_RE.match(image):
+            raise Exception(
+                prefix + "not a valid reference. Common causes: uppercase "
+                "letters in the repository name (must be lowercase), an empty "
+                "tag ('name:'), or a missing repository (':tag')."
+            )
 
     def resume_run(self, context: ResumeRunContext) -> None:
         """Resume a previously interrupted run."""

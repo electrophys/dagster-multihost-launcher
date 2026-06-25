@@ -1,0 +1,111 @@
+# Komodo Resource Sync — example for a multi-host Dagster deployment.
+#
+# Adapt to your environment and Komodo version. Generate the [[server]]/[[stack]]
+# skeleton from dagster.yaml with:
+#   dagster-multihost komodo-export -o komodo/resource-sync.toml
+# and verify it stays in sync with:
+#   dagster-multihost komodo-verify komodo/resource-sync.toml
+#
+# Convention this launcher expects:
+#   * [[server]] name      == dagster.yaml docker_hosts[].host_name
+#   * [[stack]]  name       == the Dagster code location name
+#   * [[stack]]  server     == the host that code location runs on
+
+# -- Shared variables --------------------------------------------------------
+# Mark sensitive values as secret; reference them elsewhere with [[NAME]].
+
+[[variable]]
+name = "ETL_IMAGE"
+value = "ghcr.io/acme/etl:0.4.2"   # a pinned tag — set from the build below
+
+# Docker mTLS cert material (see tls-provisioning.md). Mark the *_KEY vars
+# secret; keep the full multi-line PEM as the value. The CA *private* key stays
+# offline — never in Komodo. The provision-docker-tls action interpolates these.
+# [[variable]]
+# name = "CA_PEM"
+# value = "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----"
+# [[variable]]
+# name = "HOST_B_SERVER_CERT"
+# value = "..."
+# [[variable]]
+# name = "HOST_B_SERVER_KEY"
+# is_secret = true
+# value = "..."
+
+# -- Build: pin the code-location image --------------------------------------
+
+[[build]]
+name = "etl-image"
+[build.config]
+repo = "acme/etl"
+branch = "main"
+# Deterministic tags so the gRPC server and run containers match exactly.
+include_version_tags = true
+include_latest_tag = false
+
+# -- Servers (one per Docker host) -------------------------------------------
+
+[[server]]
+name = "host-b"
+[server.config]
+address = "https://10.0.1.2:8120"   # Periphery address (NOT the Docker URL)
+enabled = true
+
+[[server]]
+name = "host-c"
+[server.config]
+address = "https://10.0.1.3:8120"
+enabled = true
+
+# -- Stacks (one per code location) ------------------------------------------
+# environment is rendered into the stack's .env; DAGSTER_CURRENT_IMAGE pins the
+# image so launcher run containers inherit the exact same reference.
+
+[[stack]]
+name = "etl"
+[stack.config]
+server = "host-b"
+repo = "acme/etl"
+branch = "main"
+run_directory = "deploy"
+file_paths = ["docker-compose.yml"]
+environment = """
+DAGSTER_CURRENT_IMAGE=[[ETL_IMAGE]]
+"""
+
+[[stack]]
+name = "ml"
+[stack.config]
+server = "host-b"
+repo = "acme/ml"
+branch = "main"
+
+[[stack]]
+name = "analytics"
+[stack.config]
+server = "host-c"
+repo = "acme/analytics"
+branch = "main"
+
+# -- Action: the safe rollout (see actions/safe-deploy.ts) -------------------
+
+[[action]]
+name = "safe-deploy-etl"
+# Put the TypeScript from actions/safe-deploy.ts here (or manage it in the UI).
+# It runs: drain -> DeployStack -> reload -> restore for the "etl" location.
+file_contents = "see actions/safe-deploy.ts"
+
+# -- Procedure: triggerable / schedulable rollout ----------------------------
+# A single-stage procedure that runs the Action. (You can also express the
+# rollout as multiple Komodo stages instead of one Action; the Action keeps the
+# drain-state-file continuity in one place.)
+
+[[procedure]]
+name = "deploy-etl"
+[procedure.config]
+[[procedure.config.stage]]
+name = "safe deploy etl"
+enabled = true
+executions = [
+  { execution = { type = "RunAction", params = { action = "safe-deploy-etl" } }, enabled = true },
+]

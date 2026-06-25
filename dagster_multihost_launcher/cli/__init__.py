@@ -2,8 +2,14 @@
 
 import click
 
+from dagster_multihost_launcher.cli.check_env import check_env
+from dagster_multihost_launcher.cli.cleanup import cleanup
 from dagster_multihost_launcher.cli.deploy import deploy
+from dagster_multihost_launcher.cli.drain import drain
+from dagster_multihost_launcher.cli.komodo import komodo_export, komodo_verify
 from dagster_multihost_launcher.cli.pull import pull
+from dagster_multihost_launcher.cli.reload import reload
+from dagster_multihost_launcher.cli.restore import restore
 from dagster_multihost_launcher.cli.status import status
 
 
@@ -41,3 +47,10 @@ def cli(ctx, webserver_url, compose_file, dagster_home):
 cli.add_command(status)
 cli.add_command(pull)
 cli.add_command(deploy)
+cli.add_command(reload)
+cli.add_command(drain)
+cli.add_command(restore)
+cli.add_command(check_env)
+cli.add_command(cleanup)
+cli.add_command(komodo_export)
+cli.add_command(komodo_verify)

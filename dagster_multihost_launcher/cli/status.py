@@ -5,7 +5,7 @@ from rich.console import Console
 from rich.table import Table
 
 from dagster_multihost_launcher.cli.config import load_config
-from dagster_multihost_launcher.cli.graphql_client import DagsterGraphQLClient
+from dagster_multihost_launcher.graphql_client import DagsterGraphQLClient
 
 
 @click.command()

@@ -104,6 +104,52 @@ def load_compose(compose_file: str) -> Dict[str, ServiceInfo]:
     return services
 
 
+def load_dagster_yaml_raw(dagster_home: str) -> Dict[str, Any]:
+    """Load the raw dagster.yaml document as a dict."""
+    dagster_yaml = Path(dagster_home) / "dagster.yaml"
+    if not dagster_yaml.exists():
+        raise FileNotFoundError(f"dagster.yaml not found in: {dagster_home}")
+    with open(dagster_yaml) as f:
+        return yaml.safe_load(f) or {}
+
+
+def find_env_references(data: Any) -> set:
+    """Recursively collect env var names referenced as ``{"env": "NAME"}``.
+
+    Dagster resolves config like ``password: {env: DAGSTER_POSTGRES_PASSWORD}``
+    from the *daemon's own process environment*. These must be present on the
+    control-plane host (e.g. rendered there by Komodo), separately from the
+    run-container env the launcher injects.
+    """
+    found: set = set()
+    if isinstance(data, dict):
+        for key, value in data.items():
+            if key == "env" and isinstance(value, str):
+                found.add(value)
+            else:
+                found |= find_env_references(value)
+    elif isinstance(data, list):
+        for item in data:
+            found |= find_env_references(item)
+    return found
+
+
+def find_bare_env_vars(dagster_home: str) -> set:
+    """Collect launcher env_vars given as a bare ``KEY`` (no ``=``), which are
+    pulled from the daemon's process environment at launch time."""
+    raw = load_dagster_yaml_raw(dagster_home)
+    cfg = raw.get("run_launcher", {}).get("config", {})
+    bare: set = set()
+    sources = [cfg.get("default_env_vars", [])]
+    for host in cfg.get("docker_hosts", []):
+        sources.append(host.get("env_vars", []))
+    for source in sources:
+        for entry in source or []:
+            if "=" not in entry:
+                bare.add(entry)
+    return bare
+
+
 def load_dagster_yaml(dagster_home: str) -> Dict[str, DockerHostInfo]:
     """Parse dagster.yaml and extract docker_hosts config."""
     dagster_yaml = Path(dagster_home) / "dagster.yaml"
