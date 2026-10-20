@@ -17,11 +17,32 @@ def make_launcher(monkeypatch, **kwargs):
     return MultiHostDockerRunLauncher(docker_hosts=[], **kwargs)
 
 
-def make_run(location_name="loc", run_id="r1", job_name="j"):
+def make_run(location_name="loc", run_id="r1", job_name="j", grpc_port=None):
     origin = SimpleNamespace(location_name=location_name)
+    if grpc_port is not None:
+        origin.repository_origin = SimpleNamespace(
+            code_location_origin=SimpleNamespace(host="10.0.1.2", port=grpc_port)
+        )
     return SimpleNamespace(
         run_id=run_id, job_name=job_name, remote_job_origin=origin, tags={}
     )
+
+
+def make_container(name, env, host_port=None):
+    """A fake docker container publishing host_port, with Config.Env of env."""
+    ports = (
+        {"4000/tcp": [{"HostIp": "0.0.0.0", "HostPort": str(host_port)}]}
+        if host_port is not None
+        else {}
+    )
+    return SimpleNamespace(
+        name=name,
+        attrs={"Config": {"Env": env}, "NetworkSettings": {"Ports": ports}},
+    )
+
+
+def make_listing_client(containers):
+    return SimpleNamespace(containers=SimpleNamespace(list=lambda: containers))
 
 
 # -- _read_env_file --------------------------------------------------------
@@ -145,3 +166,146 @@ def test_inherit_missing_container_is_non_fatal(monkeypatch):
     }
     env = launcher._build_env_vars(make_run("loc"), host_info)
     assert env["KEEP"] == "1"  # run still gets its env despite the missing server
+
+
+# -- env inheritance by auto-discovery -------------------------------------
+
+
+def test_discovers_code_server_by_grpc_port(monkeypatch):
+    """With no inherit_env_from_container set, the server is found as the
+    container publishing the code location's gRPC port."""
+    launcher = make_launcher(monkeypatch)
+    client = make_listing_client(
+        [
+            make_container("unrelated", ["WRONG=1"], host_port=5432),
+            make_container("whatever_its_named", ["FROM_SERVER=yes"], host_port=4001),
+        ]
+    )
+
+    host_info = {"host_name": "host-b", "client": client}
+    env = launcher._build_env_vars(make_run("payments", grpc_port=4001), host_info)
+
+    assert env["FROM_SERVER"] == "yes"
+    assert "WRONG" not in env
+
+
+def test_explicit_container_name_overrides_discovery(monkeypatch):
+    launcher = make_launcher(monkeypatch)
+
+    named = make_container("code-payments", ["SOURCE=by_name"])
+    client = SimpleNamespace(
+        containers=SimpleNamespace(
+            get=lambda name: named,
+            list=lambda: [make_container("x", ["SOURCE=by_port"], host_port=4001)],
+        )
+    )
+
+    host_info = {
+        "host_name": "host-b",
+        "client": client,
+        "inherit_env_from_container": "code-{location}",
+    }
+    env = launcher._build_env_vars(make_run("payments", grpc_port=4001), host_info)
+    assert env["SOURCE"] == "by_name"
+
+
+def test_inherit_off_disables_inheritance(monkeypatch):
+    launcher = make_launcher(monkeypatch)
+    client = make_listing_client(
+        [make_container("code", ["FROM_SERVER=yes"], host_port=4001)]
+    )
+
+    host_info = {
+        "host_name": "host-b",
+        "client": client,
+        "inherit_env_from_container": "off",
+        "env_vars": ["KEEP=1"],
+    }
+    env = launcher._build_env_vars(make_run("payments", grpc_port=4001), host_info)
+
+    assert "FROM_SERVER" not in env
+    assert env["KEEP"] == "1"
+
+
+def test_discovery_no_matching_port_is_non_fatal(monkeypatch):
+    launcher = make_launcher(monkeypatch)
+    client = make_listing_client([make_container("other", ["NOPE=1"], host_port=9999)])
+
+    host_info = {"host_name": "host-b", "client": client, "env_vars": ["KEEP=1"]}
+    env = launcher._build_env_vars(make_run("payments", grpc_port=4001), host_info)
+
+    assert "NOPE" not in env
+    assert env["KEEP"] == "1"
+
+
+def test_discovery_skipped_when_origin_has_no_port(monkeypatch):
+    """Locations without a gRPC port in their origin simply skip inheritance."""
+    launcher = make_launcher(monkeypatch)
+
+    def explode():
+        raise AssertionError("should not list containers without a port")
+
+    host_info = {
+        "host_name": "host-b",
+        "client": SimpleNamespace(containers=SimpleNamespace(list=explode)),
+    }
+    env = launcher._build_env_vars(make_run("payments"), host_info)
+    assert env["DAGSTER_RUN_ID"] == "r1"
+
+
+def test_discovery_docker_error_is_non_fatal(monkeypatch):
+    launcher = make_launcher(monkeypatch)
+
+    def boom():
+        raise docker.errors.APIError("daemon down")
+
+    host_info = {
+        "host_name": "host-b",
+        "client": SimpleNamespace(containers=SimpleNamespace(list=boom)),
+        "env_vars": ["KEEP=1"],
+    }
+    env = launcher._build_env_vars(make_run("payments", grpc_port=4001), host_info)
+    assert env["KEEP"] == "1"
+
+
+def test_discovers_code_server_by_origin_hostname(monkeypatch):
+    """A shared-network code server publishes no port, but the workspace's gRPC
+    host is its container name."""
+    launcher = make_launcher(monkeypatch)
+    named = make_container("admin_code_location", ["FROM_SERVER=by_name"])
+
+    def get(name):
+        assert name == "admin_code_location"
+        return named
+
+    client = SimpleNamespace(containers=SimpleNamespace(get=get, list=lambda: []))
+    run = make_run("admin", grpc_port=4000)
+    run.remote_job_origin.repository_origin.code_location_origin.host = (
+        "admin_code_location"
+    )
+
+    env = launcher._build_env_vars(run, {"host_name": "host-a", "client": client})
+    assert env["FROM_SERVER"] == "by_name"
+
+
+def test_ip_origin_host_falls_through_to_port_scan(monkeypatch):
+    """An IP names a machine, not a container, so discovery must not look it
+    up as a container name."""
+    launcher = make_launcher(monkeypatch)
+
+    def get(name):
+        raise AssertionError(f"should not look up container by IP: {name}")
+
+    client = SimpleNamespace(
+        containers=SimpleNamespace(
+            get=get,
+            list=lambda: [
+                make_container("srv", ["FROM_SERVER=by_port"], host_port=4001)
+            ],
+        )
+    )
+    env = launcher._build_env_vars(
+        make_run("payments", grpc_port=4001),  # origin host is 10.0.1.2
+        {"host_name": "host-b", "client": client},
+    )
+    assert env["FROM_SERVER"] == "by_port"
