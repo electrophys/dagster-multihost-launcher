@@ -51,15 +51,19 @@ run_launcher:
         location_names:
           - "etl_pipelines"
           - "ml_training"
-        network: "host_b_dagster_network"
         env_vars:
           - "WAREHOUSE_HOST=10.0.1.50"
         # Per-host .env file (overrides default_env_file, below env_vars).
         env_file: "/etc/dagster/host-b.env"
-        # Inherit the code-location server's own environment so run containers
-        # match it exactly. {location} is filled with the run's code location
-        # name (e.g. the "etl_pipelines" server container "code-etl_pipelines").
-        inherit_env_from_container: "code-{location}"
+        # No 'network' here: run containers join the code-location server's own
+        # networks, so they reach whatever it reaches without repeating a
+        # Compose-generated network name. Host C below overrides that instead.
+        #
+        # Likewise, run containers inherit the server's environment. The server
+        # is discovered from the run's gRPC origin (by container name, else by
+        # published port), so no naming convention is needed. Override with an
+        # explicit name if yours matches neither, or "off" to inherit nothing:
+        #   inherit_env_from_container: "{location}_code_server"
 
       # Host C: runs analytics code locations
       - host_name: "host-c"
@@ -71,6 +75,8 @@ run_launcher:
           verify: true
         location_names:
           - "analytics"
+        # Explicit network: overrides inheritance, e.g. to put runs on a
+        # different network than the code-location server itself.
         network: "host_c_dagster_network"
 
     # Any location NOT listed above (e.g. "admin", "reporting_service")

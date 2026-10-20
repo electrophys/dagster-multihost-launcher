@@ -95,9 +95,11 @@ Install Docker on every host and decide root vs rootless (build run images in th
 same context the daemon serves). Full steps:
 [docker-setup-guide.md](docker-setup-guide.md).
 
-Create the Docker networks the stacks and run containers attach to (one per
-worker, e.g. `host_b_dagster_network`). Run containers must be able to reach
-Postgres on Host A by **real IP** (not a compose service name).
+Create the Docker networks the stacks attach to (one per worker, e.g.
+`host_b_dagster_network`). Run containers join the code-location server's
+networks automatically, so the name doesn't need repeating in `dagster.yaml` —
+which also means Komodo is free to project-prefix it. Run containers must be
+able to reach Postgres on Host A by **real IP** (not a compose service name).
 
 ---
 
@@ -144,9 +146,10 @@ run_launcher:
                client_cert: /etc/dagster/certs/client-cert.pem,
                client_key: /etc/dagster/certs/client-key.pem }
         location_names: ["etl"]
-        network: "host_b_dagster_network"
-        env_file: "/etc/dagster/host-b.env"            # per-host run-container env
-        inherit_env_from_container: "code-{location}"  # inherit the gRPC server's env
+        # network: omit to inherit the code-location server's networks
+        env_file: "/etc/dagster/host-b.env"  # per-host run-container env
+        # The gRPC server's own env is inherited by default (server found by its
+        # published port); set inherit_env_from_container to override or "off".
 ```
 
 Env precedence (low→high): `default_env_file` < host `env_file` < inherited from
