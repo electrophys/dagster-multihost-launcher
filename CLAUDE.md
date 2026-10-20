@@ -79,10 +79,10 @@ run_launcher:
         docker_url: "tcp://..."   # or ssh://user@host
         tls: {...}                # Optional TLS config
         location_names: [...]     # Code locations that run here
-        network: "..."            # Docker network for containers
+        network: "..."            # override code-server network inheritance
         env_vars: [...]           # Host-specific env vars
         env_file: "..."           # Host-specific .env file
-        inherit_env_from_container: "code-{location}"  # inherit code-server env
+        inherit_env_from_container: "..."  # override code-server autodiscovery
         container_kwargs: {}      # Host-specific container overrides
         registry: {...}           # Optional registry credentials
 ```
@@ -94,14 +94,55 @@ highest precedence:
 
 1. `default_env_file` — shared `.env` for all hosts
 2. host `env_file` — per-host `.env`
-3. host `inherit_env_from_container` — the code-location server container's
-   `Config.Env` (supports a `{location}` placeholder; failures are non-fatal)
+3. the code-location server container's `Config.Env` — **on by default**; see
+   [Code-server discovery](#code-server-discovery) below
 4. `default_env_vars` + host `env_vars` — explicit `KEY=VALUE` / `KEY`
 5. Dagster-internal vars (`DAGSTER_RUN_JOB_NAME`, `DAGSTER_RUN_ID`) — always set
 
 The `env_file` sources are designed to be rendered by an external config manager
 (e.g. Komodo Variables/Secrets), giving a single central source of env vars
 shared between the long-lived stacks and the ephemeral run containers.
+
+### Code-server discovery
+
+`launch_run` resolves the run's code-location server container once
+(`_find_code_server_container`) and models the run container on it, so a run
+matches the server that owns its code without any of it being restated in
+`dagster.yaml`. Two things are inherited: **env** (above) and **networks**
+(below).
+
+The server is found from the run's gRPC origin — the same host/port the control
+plane dials — trying, in order:
+
+1. the origin host as a container name, when it isn't an IP — covers servers on
+   a shared Docker network that publish no port
+2. the container on that host publishing the origin port — covers remote
+   locations, which must publish a port Host A can reach
+
+Set host `inherit_env_from_container` to an explicit container name to skip
+discovery (supports a `{location}` placeholder) — needed when the server neither
+publishes its port nor matches its origin host — or to `"off"` to inherit
+nothing from the server. Every failure is non-fatal: it logs and contributes
+nothing, so a run still launches with whatever else is configured.
+
+### Run-container networks
+
+With neither host `network` nor `networks` set, run containers join the networks
+the code server is on, so they reach Postgres and everything else the server
+reaches. This avoids transcribing a Compose-generated (project-prefixed) network
+name into `dagster.yaml`, a mismatch that otherwise strands run containers on
+the default bridge.
+
+Only network *names* are inherited, never the server's aliases — duplicating an
+alias would let a run container answer gRPC lookups meant for the code server.
+Explicit `network`/`networks` override inheritance; `network: "none"` gives a
+run container no networking.
+
+Mounts are deliberately **not** inherited: run containers are ephemeral and
+concurrent while the server is long-lived and singular, so sharing its volumes
+risks concurrent writers on a single-writer store and leaks server-scoped mounts
+(e.g. a Docker socket) into run code. Declare what runs need in
+`container_kwargs`.
 
 ## CLI: `dagster-multihost`
 

@@ -324,10 +324,13 @@ enumerated keys (see the precedence list in `CLAUDE.md`):
   Komodo renders from its **Variables/Secrets** (`[[VAR]]`). The *same* central
   definition feeds the control-plane stack, each code-location stack, **and** the
   run containers.
-- per-host `inherit_env_from_container: "code-{location}"` — run containers
-  inherit the code-location server's own `Config.Env`, so whatever Komodo
-  injected into the gRPC server is exactly what its runs get, with no second
-  list to maintain. Explicit `env_vars` still override.
+- code-server inheritance, **on by default** — run containers inherit the
+  code-location server's own `Config.Env`, so whatever Komodo injected into the
+  gRPC server is exactly what its runs get, with no second list to maintain and
+  nothing to configure: the launcher finds the server as the container
+  publishing that location's gRPC port. Explicit `env_vars` still override. Set
+  per-host `inherit_env_from_container` to a container name if the server
+  doesn't publish its port, or to `"off"` to disable.
 
 This closes the "set it on every host too" gap called out in
 [Networking Requirements](CLAUDE.md): the run worker's env is sourced from a

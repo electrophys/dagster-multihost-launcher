@@ -116,6 +116,7 @@ run_launcher:
 |-----|------|-------------|
 | `docker_hosts` | list | Remote Docker host configurations |
 | `default_env_vars` | list[str] | Env vars passed to ALL run containers |
+| `default_env_file` | str | `.env` file (on the daemon host) injected into ALL run containers |
 | `default_container_kwargs` | dict | Default `containers.create()` kwargs |
 | `container_label_prefix` | str | Label prefix (default: `dagster`) |
 
@@ -127,9 +128,11 @@ run_launcher:
 | `docker_url` | str | no | Docker daemon URL (`tcp://`, `ssh://`, `unix://`). Omit to use the local daemon. |
 | `location_names` | list[str] | yes | Code locations that run here |
 | `tls` | dict | no | TLS config (ca_cert, client_cert, client_key, verify) |
-| `network` | str | no | Docker network to attach run containers to |
-| `networks` | list[str] | no | Multiple networks to attach to |
+| `network` | str | no | Docker network to attach run containers to. Leave this and `networks` unset to inherit the code server's networks; `"none"` for no networking. |
+| `networks` | list[str] | no | Multiple networks to attach to. Overrides inheritance. |
 | `env_vars` | list[str] | no | Host-specific env vars |
+| `env_file` | str | no | Host-specific `.env` file (on the daemon host) |
+| `inherit_env_from_container` | str | no | Overrides code-server env inheritance, which is **on by default** (the server is found by its published gRPC port). Give a container name — a `{location}` placeholder is supported — when the server doesn't publish its port, or `"off"` to disable inheritance. |
 | `container_kwargs` | dict | no | Host-specific `containers.create()` kwargs |
 | `registry` | dict | no | Registry credentials (url, username, password) |
 
@@ -252,11 +255,9 @@ When `DefaultRunLauncher` sends a run to a remote gRPC server, it includes the d
 
 ### Run containers → other services
 
-If run containers need to talk to services in the same docker-compose stack on their host (e.g., a local Redis), attach them to the same network via the `network` config.
+Run containers join the code-location server's own networks by default, so they can reach whatever the server reaches (Postgres, a local Redis in the same docker-compose stack) with nothing configured. Only network names are inherited, never the server's aliases.
 
-**Important:** Docker Compose prefixes network names with the project name. Either:
-- Use an explicit `name:` in your docker-compose network definition
-- Use the full prefixed name in your `dagster.yaml`
+Set `network` (or `networks`) on the host to override that — but note that Docker Compose prefixes network names with the project name, so an explicit value must either match a `name:` you set in the compose network definition or use the full prefixed name. Inheritance sidesteps that mismatch, which is the usual cause of a run container coming up unable to resolve Postgres. Use `network: "none"` for a run container with no networking.
 
 ### Code location gRPC → Host A
 
