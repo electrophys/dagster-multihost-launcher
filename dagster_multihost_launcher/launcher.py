@@ -47,6 +47,21 @@ TAG_LAUNCHER_TYPE = "multihost_docker/launcher_type"
 LAUNCHER_TYPE_DOCKER = "docker"
 LAUNCHER_TYPE_DEFAULT = "default"
 
+# A gRPC origin host that is an IP (or localhost) names a machine, not a
+# container, so it is no use as a container lookup during env inheritance.
+_IP_ADDRESS_RE = re.compile(
+    r"^(?:\d{1,3}(?:\.\d{1,3}){3}|\[?[0-9a-fA-F:]+\]?|localhost)$"
+)
+
+# Sentinel value for inherit_env_from_container that disables inheritance
+# (including auto-discovery), for deployments that want run containers to get
+# only what env_file/env_vars provide.
+INHERIT_OFF = "off"
+
+# Distinguishes "caller has not resolved the code server yet" from "there is no
+# code server", so a launch can resolve it once and share it.
+_UNRESOLVED = object()
+
 # Docker image reference grammar (based on distribution/reference): an optional
 # registry domain (host[:port] / IP[:port] / localhost), a lowercase repository
 # path, and an optional :tag and/or @digest. Used to reject malformed images
@@ -222,13 +237,22 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
                 Noneable(str),
                 default_value=None,
                 is_required=False,
-                description="Docker network to attach run containers to.",
+                description=(
+                    "Docker network to attach run containers to. Leave this and "
+                    "'networks' unset to inherit the code-location server's own "
+                    "networks, so runs reach whatever the server reaches without "
+                    "naming a Compose-generated network here. Use 'none' for a "
+                    "run container with no networking."
+                ),
             ),
             "networks": Field(
                 Noneable([str]),
                 default_value=None,
                 is_required=False,
-                description="Multiple Docker networks to attach run containers to.",
+                description=(
+                    "Multiple Docker networks to attach run containers to. "
+                    "Overrides inheritance of the code server's networks."
+                ),
             ),
             "env_vars": Field(
                 [str],
@@ -257,7 +281,11 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
                     "Name of the code-location server container on this host to "
                     "inherit the environment from (its Config.Env is merged into "
                     "run containers). Supports a {location} placeholder, e.g. "
-                    "'code-{location}'. Resolved over this host's Docker client."
+                    "'code-{location}'. Resolved over this host's Docker client. "
+                    "Leave unset to auto-discover the server from the code "
+                    "location's gRPC origin -- by container name, else by "
+                    "published port -- which is the usual case and needs no "
+                    "naming convention. Set to 'off' to disable inheritance."
                 ),
             ),
             "container_kwargs": Field(
@@ -353,7 +381,10 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
     # -------------------------------------------------------------------------
 
     def _build_env_vars(
-        self, run: DagsterRun, host_info: Dict[str, Any]
+        self,
+        run: DagsterRun,
+        host_info: Dict[str, Any],
+        server_container: Any = _UNRESOLVED,
     ) -> Dict[str, str]:
         """Build environment variables for a run container.
 
@@ -362,12 +393,16 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
 
         1. ``default_env_file``                  — shared file for all hosts
         2. host ``env_file``                     — per-host file
-        3. host ``inherit_env_from_container``   — the code-location server's env
+        3. the code-location server's env        — see ``inherit_env_from_container``
         4. ``default_env_vars`` + host ``env_vars`` — explicit KEY=VALUE / KEY
         5. Dagster-internal vars (always set last)
 
         Variables in ``env_vars`` given as just ``KEY`` (no ``=``) are pulled
         from the daemon's own process environment.
+
+        ``server_container`` is the already-resolved code server (``None`` if
+        there isn't one), so a launch shares one lookup between env and network
+        inheritance; left unset, it is resolved here.
         """
         env: Dict[str, str] = {}
 
@@ -378,10 +413,13 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
         if host_env_file:
             env.update(self._read_env_file(host_env_file))
 
-        # 3: inherit env from the code-location server container on this host
-        inherit_from = host_info.get("inherit_env_from_container")
-        if inherit_from:
-            env.update(self._inherit_server_env(run, host_info, inherit_from))
+        # 3: inherit env from the code-location server container on this host.
+        # See _find_code_server_container for how the server is resolved.
+        if server_container is _UNRESOLVED:
+            server_container = self._find_code_server_container(run, host_info)
+        if server_container is not None:
+            env_list = (server_container.attrs.get("Config", {}) or {}).get("Env") or []
+            env.update(self._env_from_list(env_list))
 
         # 4: explicit env vars (default then host) override files/inheritance
         all_vars = self._default_env_vars + host_info.get("env_vars", [])
@@ -443,31 +481,30 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
         run: DagsterRun,
         host_info: Dict[str, Any],
         container_template: str,
-    ) -> Dict[str, str]:
-        """Read a code-location server container's environment so run containers
-        inherit whatever was injected into the server (e.g. by Komodo).
+    ) -> Optional[Any]:
+        """Look up the code-location server container by an explicit name so run
+        containers can inherit from it (e.g. whatever Komodo injected).
 
         ``container_template`` may contain a ``{location}`` placeholder, which is
         filled with this run's code location name. Failures (container missing,
-        daemon unreachable) log a warning and yield ``{}``.
+        daemon unreachable) log a warning and yield ``None``.
         """
         location = self._get_location_name(run) or ""
         container_name = container_template.format(location=location)
         client = host_info.get("client")
         host_name = host_info.get("host_name")
         if client is None:
-            return {}
+            return None
 
         try:
-            container = client.containers.get(container_name)
-            env_list = container.attrs.get("Config", {}).get("Env") or []
+            return client.containers.get(container_name)
         except docker.errors.NotFound:
             logger.warning(
                 "inherit_env_from_container '%s' not found on host '%s'; skipping",
                 container_name,
                 host_name,
             )
-            return {}
+            return None
         except Exception as e:
             logger.warning(
                 "Could not inherit env from container '%s' on host '%s': %s",
@@ -475,8 +512,171 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
                 host_name,
                 e,
             )
-            return {}
+            return None
 
+    def _find_code_server_container(
+        self, run: DagsterRun, host_info: Dict[str, Any]
+    ) -> Optional[Any]:
+        """The code-location server container this run's container should be
+        modelled on, or ``None``.
+
+        Resolved once per launch and shared by env and network inheritance:
+        an explicit ``inherit_env_from_container`` names it, ``"off"`` opts out
+        of inheriting anything from the server, and otherwise it is discovered
+        from the run's gRPC origin.
+        """
+        inherit_from = host_info.get("inherit_env_from_container")
+        if inherit_from and inherit_from.strip().lower() == INHERIT_OFF:
+            return None
+        if inherit_from:
+            return self._inherit_server_env(run, host_info, inherit_from)
+        return self._discover_server_container(run, host_info)
+
+    def _discover_server_container(
+        self, run: DagsterRun, host_info: Dict[str, Any]
+    ) -> Optional[Any]:
+        """Find this run's code-location server container without being told its
+        name.
+
+        The workspace entry for a code location carries the gRPC host and port
+        the control plane dials, which identify the server two ways:
+
+        1. the origin host, when it is a name rather than an IP — that is the
+           container's name/alias on a shared Docker network
+        2. the container publishing the origin port on this host — the case for
+           remote locations, which must publish a port Host A can reach
+
+        Between them, inheritance works with no config and no container-naming
+        convention. Failures (no origin port, daemon unreachable, no match) log
+        and yield ``None`` — the same non-fatal contract as an explicit
+        ``inherit_env_from_container``.
+        """
+        client = host_info.get("client")
+        host_name = host_info.get("host_name")
+        port = self._code_server_grpc_port(run)
+        if client is None or port is None:
+            return None
+
+        # 1: the origin host as a container name (shared-network code servers
+        # publish no port, so the port scan below cannot find them).
+        origin_host = self._code_server_grpc_host(run)
+        if origin_host and not _IP_ADDRESS_RE.match(origin_host):
+            try:
+                container = client.containers.get(origin_host)
+            except Exception:
+                container = None
+            if container is not None:
+                logger.debug(
+                    "Code server for host '%s' is '%s' (matched gRPC origin host)",
+                    host_name,
+                    origin_host,
+                )
+                return container
+
+        # 2: the container publishing the gRPC port
+        try:
+            containers = client.containers.list()
+        except Exception as e:
+            logger.warning(
+                "Could not list containers on host '%s' to discover the code "
+                "server for inheritance: %s",
+                host_name,
+                e,
+            )
+            return None
+
+        for container in containers:
+            if self._publishes_host_port(container, port):
+                logger.debug(
+                    "Code server for host '%s' is '%s' (publishes gRPC port %s)",
+                    host_name,
+                    getattr(container, "name", "?"),
+                    port,
+                )
+                return container
+
+        logger.warning(
+            "No container on host '%s' publishes gRPC port %s for code location "
+            "'%s'; run containers inherit neither its env nor its networks. Set "
+            "inherit_env_from_container to the server's container name, or '%s' "
+            "to silence this.",
+            host_name,
+            port,
+            self._get_location_name(run),
+            INHERIT_OFF,
+        )
+        return None
+
+    def _resolve_networks(
+        self, host_info: Dict[str, Any], server_container: Any
+    ) -> List[str]:
+        """The networks to attach a run container to.
+
+        Explicit host ``network``/``networks`` win. With neither set, the run
+        joins the networks the code-location server is on, so it can reach
+        Postgres and everything else the server reaches without anyone
+        transcribing a Compose-generated network name into ``dagster.yaml``.
+        (Set ``network: "none"`` for a run container with no networking.)
+
+        Only network *names* are inherited, never the server's aliases: an alias
+        is the code location's service DNS name, and duplicating it would let a
+        run container answer gRPC lookups meant for the server.
+        """
+        network = host_info.get("network")
+        networks = list(host_info.get("networks") or [])
+        if network:
+            return [network] + [n for n in networks if n != network]
+        if networks:
+            return networks
+        if server_container is None:
+            return []
+
+        network_settings = server_container.attrs.get("NetworkSettings") or {}
+        inherited = list((network_settings.get("Networks") or {}).keys())
+        if inherited:
+            logger.debug(
+                "Run container on host '%s' inherits networks %s from '%s'",
+                host_info.get("host_name"),
+                inherited,
+                getattr(server_container, "name", "?"),
+            )
+        return inherited
+
+    @staticmethod
+    def _code_server_grpc_host(run: DagsterRun) -> Optional[str]:
+        """The host the control plane dials for this run's code location."""
+        origin = getattr(run, "remote_job_origin", None)
+        repo_origin = getattr(origin, "repository_origin", None)
+        location_origin = getattr(repo_origin, "code_location_origin", None)
+        host = getattr(location_origin, "host", None)
+        return host if isinstance(host, str) and host else None
+
+    @staticmethod
+    def _code_server_grpc_port(run: DagsterRun) -> Optional[int]:
+        """The port the control plane dials for this run's code location, from
+        the workspace's gRPC origin. ``None`` for origins without one."""
+        origin = getattr(run, "remote_job_origin", None)
+        repo_origin = getattr(origin, "repository_origin", None)
+        location_origin = getattr(repo_origin, "code_location_origin", None)
+        port = getattr(location_origin, "port", None)
+        try:
+            return int(port) if port else None
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _publishes_host_port(container: Any, port: int) -> bool:
+        """Whether a container publishes ``port`` on the host."""
+        network_settings = container.attrs.get("NetworkSettings") or {}
+        for bindings in (network_settings.get("Ports") or {}).values():
+            for binding in bindings or []:
+                if str(binding.get("HostPort")) == str(port):
+                    return True
+        return False
+
+    @staticmethod
+    def _env_from_list(env_list: List[str]) -> Dict[str, str]:
+        """Turn Docker's ``["KEY=VALUE", ...]`` Config.Env into a dict."""
         result: Dict[str, str] = {}
         for item in env_list:
             if "=" in item:
@@ -545,7 +745,10 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
             run_id=run.run_id,
             instance_ref=self._instance.get_ref(),
         ).get_command_args()
-        env_vars = self._build_env_vars(run, host_info)
+        # Resolved once and shared: the run container inherits both its env and
+        # (absent explicit config) its networks from the code-location server.
+        server_container = self._find_code_server_container(run, host_info)
+        env_vars = self._build_env_vars(run, host_info, server_container)
         labels = self._container_labels(run)
 
         # Merge container kwargs: defaults < host-specific
@@ -553,11 +756,7 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
         if host_info.get("container_kwargs"):
             container_kwargs.update(host_info["container_kwargs"])
 
-        # Handle networks
-        network = host_info.get("network")
-        networks = host_info.get("networks") or []
-        if network:
-            networks = [network] + [n for n in networks if n != network]
+        networks = self._resolve_networks(host_info, server_container)
 
         # Create container
         create_kwargs = {
