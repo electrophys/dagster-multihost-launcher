@@ -11,7 +11,7 @@
     "source=${localEnv:HOME}/.ssh,target=/home/vscode/.ssh,type=bind,readonly",
     "source=${localEnv:HOME}/.claude,target=/home/vscode/.claude,type=bind"
   ],
-  "postStartCommand": "sudo chown -R vscode:vscode /home/vscode/.claude",
+  "postStartCommand": "sudo chown -R vscode:vscode /home/vscode/.claude && sh .devcontainer/start-docker.sh",
   "postCreateCommand": "pip install uv && uv sync --group dev && uv run pre-commit install",
   "forwardPorts": [3000],
   "portsAttributes": {
