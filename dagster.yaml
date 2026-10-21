@@ -30,6 +30,17 @@ run_launcher:
     # Default container kwargs applied to all Docker hosts
     default_container_kwargs:
       auto_remove: false
+      # For Loki (loki/docker-host.alloy): log run containers with json-file and
+      # embed their dagster/* labels in every line, so Alloy can read a run's
+      # logs from disk -- in full, however briefly the container ran -- and
+      # still know which run they belong to. Match labels-regex to
+      # container_label_prefix if you change it.
+      log_config:
+        type: json-file
+        config:
+          labels-regex: "^dagster/"
+          max-size: "50m"
+          max-file: "3"
 
     # Docker hosts and their code location mappings
     docker_hosts:
@@ -82,9 +93,16 @@ run_launcher:
     # Any location NOT listed above (e.g. "admin", "reporting_service")
     # will use the DefaultRunLauncher and run as a subprocess via gRPC.
 
+    # Link each run to its logs in Grafana/Loki (see loki/). Posted as a
+    # clickable engine event at launch. Placeholders: {run_id}, {job_name},
+    # {location}, {host_name}, {launch_ms}. This one opens Explore on the
+    # Loki query {host=~".+"} | dagster_run_id="<run id>" from launch time;
+    # replace LOKI_UID with your Loki data source's uid.
+    log_url_template: "https://grafana.example.internal/explore?schemaVersion=1&orgId=1&panes=%7B%22a%22%3A%7B%22datasource%22%3A%22LOKI_UID%22%2C%22queries%22%3A%5B%7B%22refId%22%3A%22A%22%2C%22datasource%22%3A%7B%22type%22%3A%22loki%22%2C%22uid%22%3A%22LOKI_UID%22%7D%2C%22expr%22%3A%22%7Bhost%3D~%5C%22.%2B%5C%22%7D%20%7C%20dagster_run_id%3D%5C%22{run_id}%5C%22%22%7D%5D%2C%22range%22%3A%7B%22from%22%3A%22{launch_ms}%22%2C%22to%22%3A%22now%22%7D%7D%7D"
+
 storage:
   postgres:
-    postgres_db:
+    postgres_db: &postgres_db
       username:
         env: DAGSTER_POSTGRES_USER
       password:
@@ -94,3 +112,42 @@ storage:
       db_name:
         env: DAGSTER_POSTGRES_DB
       port: 5432
+
+# Captured stdout/stderr ("compute logs"). This config travels to every run
+# worker in the instance_ref, so it applies to runs on every host -- and every
+# run image (and Host D) must have the chosen module installed, or runs fail.
+# Without this block, logs land on the disk of whichever host ran the step and
+# never reach the webserver on Host A.
+compute_logs:
+  module: dagster_multihost_launcher.compute_log_manager
+  class: PostgresComputeLogManager
+  config:
+    # Same database as storage above; every run worker already reaches it.
+    postgres_db: *postgres_db
+    # Upload in-progress logs every 30s, so running steps show output in the
+    # UI and a crashed run keeps what it printed.
+    upload_interval: 30
+    # Per-file cap; longer logs keep only their tail.
+    max_log_bytes: 10485760
+
+# Alternative: S3 via dagster-aws (install dagster-aws everywhere, and add
+# AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_DEFAULT_REGION to
+# default_env_vars above so run containers get the credentials).
+# compute_logs:
+#   module: dagster_aws.s3.compute_log_manager
+#   class: S3ComputeLogManager
+#   config:
+#     bucket: "my-dagster-compute-logs"
+#     prefix: "dagster"
+#     upload_interval: 30
+#     # For a self-hosted S3-compatible store (MinIO, Garage, SeaweedFS):
+#     # endpoint_url: "http://10.0.1.1:9000"
+
+# Route Python `logging` records into the structured event log (Postgres), so
+# they show in the run's event view alongside context.log. List the loggers
+# your code and libraries use; this does not capture print() or subprocess
+# output -- that is what compute_logs above is for.
+python_logs:
+  python_log_level: INFO
+  managed_python_loggers:
+    - my_project

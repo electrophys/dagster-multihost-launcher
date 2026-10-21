@@ -1,0 +1,29 @@
+# Grafana provisioning for the Loki data source (e.g. in
+# /etc/grafana/provisioning/datasources/). The derived field turns each log
+# line's dagster_run_id into an "Open in Dagster" link to that run. Merge the
+# derivedFields into your existing Loki data source if you already have one.
+apiVersion: 1
+
+datasources:
+  - name: Loki
+    type: loki
+    uid: LOKI_UID # the uid log_url_template in dagster.yaml points at
+    access: proxy
+    url: http://loki.example.internal:3100
+    jsonData:
+      derivedFields:
+        # Reads the structured metadata Alloy attaches (loki/*.alloy).
+        # matcherType "label" needs Grafana 10.4+; on older versions use the
+        # regex form below instead.
+        # "$$" is a literal "$": Grafana expands ${...} in provisioning files
+        # as environment variables, which would blank out ${__value.raw}.
+        - name: dagster_run_id
+          matcherType: label
+          matcherRegex: dagster_run_id
+          url: "https://dagster.example.internal/runs/$${__value.raw}"
+          urlDisplayLabel: Open in Dagster
+        # Older Grafana: match the run ID in Dagster's console lines.
+        # - name: dagster_run_id
+        #   matcherRegex: " - ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}) - "
+        #   url: "https://dagster.example.internal/runs/$${__value.raw}"
+        #   urlDisplayLabel: Open in Dagster

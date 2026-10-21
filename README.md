@@ -118,6 +118,7 @@ run_launcher:
 | `default_env_vars` | list[str] | Env vars passed to ALL run containers |
 | `default_env_file` | str | `.env` file (on the daemon host) injected into ALL run containers |
 | `default_container_kwargs` | dict | Default `containers.create()` kwargs |
+| `log_url_template` | str | Link to each run's logs in an external viewer (e.g. Grafana), posted at launch. Placeholders: `{run_id}`, `{job_name}`, `{location}`, `{host_name}`, `{launch_ms}`. |
 | `container_label_prefix` | str | Label prefix (default: `dagster`) |
 
 **Per docker_host:**
@@ -286,9 +287,87 @@ Set `DAGSTER_CURRENT_IMAGE` in your code location's environment (see Host B dock
 
 ## Logging
 
-Dagster's run worker process (`dagster api execute_run`) writes structured events directly to Postgres. As long as the run container can reach Postgres, logs appear in the Dagster UI automatically — no log forwarding required.
+Dagster produces two kinds of run logs, and they travel differently:
 
-For container-level failures (OOM, image pull errors, crashes), the `check_run_worker_health` method captures the last 25 lines of Docker logs and reports them as engine events.
+- **Event logs** — `context.log`, step events, materializations. The run worker writes these straight to Postgres, so they reach the UI from every host with nothing to configure.
+- **Compute logs** — a step's raw stdout/stderr (the UI's stdout/stderr view). These are written by a *compute log manager*. Dagster's default, `LocalComputeLogManager`, keeps them on the disk of whichever host ran the step — inside a run container on Host B/C, or on Host D — so the webserver on Host A shows nothing, and a removed run container takes them with it.
+
+Fix compute logs with a `compute_logs:` block in Host A's `dagster.yaml`. That config is part of the `instance_ref` every run worker receives, so it applies on all hosts at once. It also covers sensor and schedule `context.log` output, which the code-location server writes through the same manager. So every run image **and every code-location server** (including Host D) must have the chosen manager's package installed and its credentials in env (the `DAGSTER_POSTGRES_*` vars for the Postgres option). Otherwise runs fail to start, and sensors or schedules that call `context.log` fail to evaluate.
+
+### Option 1: Postgres (no extra infrastructure)
+
+`PostgresComputeLogManager`, shipped in this package, stores logs in the Dagster database every run worker already reaches:
+
+```yaml
+storage:
+  postgres:
+    postgres_db: &postgres_db
+      username: {env: DAGSTER_POSTGRES_USER}
+      # ...
+
+compute_logs:
+  module: dagster_multihost_launcher.compute_log_manager
+  class: PostgresComputeLogManager
+  config:
+    postgres_db: *postgres_db   # or postgres_url
+    upload_interval: 30         # stream in-progress logs; default: on step completion
+    max_log_bytes: 10485760     # per-file cap; longer logs keep their tail
+```
+
+It creates a `multihost_compute_logs` table on first use. Install `dagster-multihost-launcher` in every code-location image and on Host D.
+
+### Option 2: S3 via `dagster-aws`
+
+```yaml
+compute_logs:
+  module: dagster_aws.s3.compute_log_manager
+  class: S3ComputeLogManager
+  config:
+    bucket: "my-dagster-compute-logs"
+    upload_interval: 30
+    # endpoint_url: "http://10.0.1.1:9000"   # MinIO / Garage / SeaweedFS instead of AWS
+```
+
+Install `dagster-aws` in every code-location image, on Host D, and in the webserver image. Run containers need credentials: add `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_DEFAULT_REGION` to `default_env_vars` (or let them be inherited from the code server's env). `dagster-multihost check-env` reports any missing on the control plane.
+
+### Python `logging`
+
+Records from Python loggers your code uses can go into the event log too, which needs no compute log manager at all:
+
+```yaml
+python_logs:
+  python_log_level: INFO
+  managed_python_loggers:
+    - my_project
+```
+
+This doesn't capture `print()` or subprocess output; use `compute_logs` for those.
+
+### Loki / Grafana (via Alloy)
+
+Docker already captures everything the Dagster UI misses — sensor `print()`s, run-worker startup errors, code-server and daemon logs, and step output lost to a crash or truncated by the compute log manager. Dagster echoes captured step output to the process's real stdout too, so container logs hold the complete picture. [`loki/`](loki/) has ready-to-adapt configs to get it into Loki keyed by run:
+
+- [`loki/docker-host.alloy`](loki/docker-host.alloy) — for Hosts A–C, in two parts:
+  - **Run containers** are read from Docker's `json-file` logs on disk, not through the Docker API. The API source only starts tailing a container about 10s after it starts (it batches target updates), and it only lists running containers, so it misses every run shorter than that. A `json-file` log stays on disk until the container is removed, and the launcher keeps exited run containers until cleanup. The launcher's labels (`dagster/run_id`, `job_name`, `location_name`, `host_name`) come from each line's `attrs`, which Docker writes when the container is created with `labels-regex: ^dagster/`. The example [`dagster.yaml`](dagster.yaml) sets that through `default_container_kwargs.log_config`. **A run container without it is not collected.**
+  - **Everything else** (code servers, webserver, daemon) is tailed through the Docker API, with the run ID parsed from Dagster's console lines where present.
+
+  `dagster_run_id` becomes **structured metadata**, not an index label, because it is unique per run (needs Loki 3.x). Alloy needs `/var/run/docker.sock` and `/var/lib/docker/containers` mounted read-only.
+- [`loki/bare-process-host.alloy`](loki/bare-process-host.alloy) — for Host D. Tails the code server's redirected output file, tagging lines with the run ID from Dagster's console format.
+- [`loki/grafana-datasource.yaml`](loki/grafana-datasource.yaml) — a Loki data source whose derived field links each line's run ID back to the run in the Dagster UI.
+
+Find a run's logs with `{host=~".+"} | dagster_run_id="<run id>"`.
+
+To link the other way, set `log_url_template` on the launcher. Every run — Docker or DefaultRunLauncher — gets an engine event at launch whose `logs` metadata links to the URL, with `{run_id}`, `{job_name}`, `{location}`, `{host_name}` and `{launch_ms}` filled in (URL-encoded; other braces are left alone, so Grafana's JSON-in-URL works). The example [`dagster.yaml`](dagster.yaml) has one that opens Grafana Explore on the query above.
+
+The easiest way to make your own: run the query in Grafana Explore, use **Share → Copy link**, then replace the run ID with `{run_id}` and the start time with `{launch_ms}`.
+
+Caveats:
+- Containers other than run containers are discovered every 10s and read from their start, so only one that starts and exits within about 20s is missed. Code servers and the daemon are long-lived, so this rarely matters.
+- In a step's raw `print()` output, the run ID is only known from the container label. On Host D such lines have no run ID; use the Dagster UI's stdout/stderr view for those.
+
+### Container-level failures
+
+For failures outside the run worker (OOM, image pull errors, crashes), `check_run_worker_health` captures the last 25 lines of Docker logs and reports them as engine events.
 
 ## Examples
 

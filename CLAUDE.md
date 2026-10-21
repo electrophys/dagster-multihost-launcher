@@ -41,11 +41,13 @@ This allows mixing Docker and non-Docker code locations in the same Dagster inst
 ### Key Files
 
 - `dagster_multihost_launcher/launcher.py` — `MultiHostDockerRunLauncher` class implementing `RunLauncher` interface
+- `dagster_multihost_launcher/compute_log_manager.py` — `PostgresComputeLogManager`: stores captured stdout/stderr in Postgres so the webserver sees logs from remote hosts
 - `dagster_multihost_launcher/admin_assets.py` — Pre-built Dagster assets for container cleanup and status monitoring
 - `dagster_multihost_launcher/__init__.py` — Package exports
 - `dagster.yaml` — Example config showing host routing and TLS setup
 - `workspace.yaml` — Example workspace with local + remote gRPC code locations
 - `integration_test/` — Working multi-host integration test across 3 physical machines
+- `loki/` — Alloy configs (Docker hosts, bare-process host) and a Grafana Loki data source for shipping Dagster logs to Loki keyed by run ID
 
 ### Run Tags
 
@@ -74,6 +76,7 @@ run_launcher:
     default_env_vars: [...]       # Env vars for ALL run containers
     default_env_file: "..."       # .env file (on daemon host) for ALL run containers
     default_container_kwargs: {}  # Default containers.create() kwargs
+    log_url_template: "..."      # Link to run logs (e.g. Grafana), posted at launch
     docker_hosts:
       - host_name: "host-b"
         docker_url: "tcp://..."   # or ssh://user@host
@@ -143,6 +146,57 @@ concurrent while the server is long-lived and singular, so sharing its volumes
 risks concurrent writers on a single-writer store and leaks server-scoped mounts
 (e.g. a Docker socket) into run code. Declare what runs need in
 `container_kwargs`.
+
+### Compute logs (stdout/stderr)
+
+Event logs reach Postgres from every host on their own; captured stdout/stderr
+do not. They are written by the instance's compute log manager, whose config
+reaches every run worker in the `instance_ref` — so with Dagster's default
+`LocalComputeLogManager` they land on the remote host's disk (or vanish with
+its run container) and the webserver on Host A shows nothing.
+
+Configure `compute_logs` in Host A's `dagster.yaml` with a shared backend:
+`PostgresComputeLogManager` (this package; reuses the storage DB, no new
+infra) or `dagster_aws.s3.S3ComputeLogManager` (also works against MinIO etc.
+via `endpoint_url`). Either way the manager's package (and its credentials,
+e.g. `DAGSTER_POSTGRES_*`) must be available in every run image *and every
+code-location server*, Host D included: code servers write sensor/schedule
+`context.log` through it, and Dagster builds the manager outside its own error
+handling, so a missing module or env var fails runs at startup and fails
+logging sensors/schedules. `python_logs:
+managed_python_loggers` additionally routes Python `logging` records into the
+event log.
+
+`PostgresComputeLogManager` subclasses Dagster's
+`CloudStorageComputeLogManager`: logs stage in a local dir and upload on step
+completion (and every `upload_interval` s as `partial` rows). It truncates
+itself (keeping the tail, `max_log_bytes`) rather than relying on the base
+class, which only gained truncation in Dagster 1.12.
+
+### Loki / Grafana
+
+Run containers carry Docker labels `<prefix>/run_id`, `job_name`,
+`location_name`, `host_name` and `managed` (prefix: `container_label_prefix`,
+default `dagster`). `managed` drives cleanup; the rest let Alloy tag container
+output by run. `dagster_run_id` goes to structured metadata (unique per run, so never
+an index label). `loki/docker-host.alloy` reads **run containers from their
+json-file logs on disk**, not the Docker API: `loki.source.docker` begins
+tailing ~10s after a container starts and only lists running ones, so it misses
+short runs (verified against Alloy 1.8). That requires run containers to log
+with `json-file` + `labels-regex: ^dagster/` (set in
+`default_container_kwargs.log_config`), which embeds the labels as `attrs` in
+each line. Other containers go through the Docker API (run containers dropped
+there to avoid duplicates), with the run ID regex-parsed from Dagster's console
+lines (`... - <job> - <run_id> - ...`), as on Host D.
+
+The devcontainer runs docker-in-docker; `.devcontainer/start-docker.sh` switches
+iptables to the nft backend, since the feature's legacy default fails on
+nftables-only host kernels (e.g. Fedora).
+
+`log_url_template` posts an engine event with URL metadata (`logs`) at launch
+for every run, Docker or default. Placeholders are filled by plain string
+replacement, not `str.format`, because Grafana URLs embed JSON braces; values
+are URL-encoded. Reporting failures are logged, never fatal.
 
 ## CLI: `dagster-multihost`
 
