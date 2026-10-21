@@ -15,16 +15,19 @@ import re
 import time
 import os
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
 import docker
 from docker.tls import TLSConfig
 
 from dagster import (
     Field,
+    MetadataValue,
     Noneable,
     StringSource,
     _check as check,
 )
+from dagster._core.events import EngineEventData
 from dagster._core.launcher import (
     CheckRunHealthResult,
     LaunchRunContext,
@@ -96,6 +99,7 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
         default_env_file: Optional[str] = None,
         default_container_kwargs: Optional[Dict[str, Any]] = None,
         container_label_prefix: str = "dagster",
+        log_url_template: Optional[str] = None,
         inst_data: Optional[ConfigurableClassData] = None,
     ):
         super().__init__()
@@ -104,6 +108,7 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
         self._default_env_file = default_env_file
         self._default_container_kwargs = default_container_kwargs or {}
         self._container_label_prefix = container_label_prefix
+        self._log_url_template = log_url_template
 
         # Build host map: location_name -> host config + Docker client
         self._docker_host_map: Dict[str, Dict[str, Any]] = {}
@@ -336,6 +341,20 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
                 default_value="dagster",
                 is_required=False,
                 description="Prefix for labels applied to run containers.",
+            ),
+            "log_url_template": Field(
+                Noneable(str),
+                default_value=None,
+                is_required=False,
+                description=(
+                    "URL of this run's logs in an external viewer (e.g. Grafana "
+                    "Explore over Loki), posted as a link on every run at launch. "
+                    "Placeholders: {run_id}, {job_name}, {location}, "
+                    "{host_name} (empty for DefaultRunLauncher runs) and "
+                    "{launch_ms} (launch time, epoch milliseconds). Values are "
+                    "URL-encoded; no other braces are interpreted, so a "
+                    "Grafana URL's JSON can be pasted as-is."
+                ),
             ),
         }
 
@@ -688,13 +707,56 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
     # Container labels
     # -------------------------------------------------------------------------
 
-    def _container_labels(self, run: DagsterRun) -> Dict[str, str]:
+    def _container_labels(self, run: DagsterRun, host_name: str) -> Dict[str, str]:
+        # Besides cleanup, these let a log collector (e.g. Alloy) tag each run
+        # container's output with the run it belongs to.
         prefix = self._container_label_prefix
         return {
             f"{prefix}/run_id": run.run_id,
             f"{prefix}/job_name": run.job_name,
+            f"{prefix}/location_name": self._get_location_name(run) or "",
+            f"{prefix}/host_name": host_name,
             f"{prefix}/managed": "true",
         }
+
+    def _log_url(self, run: DagsterRun, host_name: Optional[str]) -> Optional[str]:
+        """``log_url_template`` filled in for this run, or ``None`` if unset.
+
+        Placeholders are substituted by plain replacement rather than
+        ``str.format``, because log-viewer URLs (Grafana's especially) are full
+        of literal braces.
+        """
+        if not self._log_url_template:
+            return None
+        values = {
+            "run_id": run.run_id,
+            "job_name": run.job_name,
+            "location": self._get_location_name(run) or "",
+            "host_name": host_name or "",
+            "launch_ms": str(int(time.time() * 1000)),
+        }
+        url = self._log_url_template
+        for key, value in values.items():
+            url = url.replace("{" + key + "}", quote(value, safe=""))
+        return url
+
+    def _report_log_url(self, run: DagsterRun, host_name: Optional[str]) -> None:
+        """Post a link to the run's logs in the external viewer. Non-fatal: a
+        run never fails to launch over a missing link."""
+        url = self._log_url(run, host_name)
+        if url is None:
+            return
+        try:
+            self._instance.report_engine_event(
+                "Run logs are also available in the external log viewer",
+                run,
+                engine_event_data=EngineEventData(
+                    metadata={"logs": MetadataValue.url(url)}
+                ),
+                cls=self.__class__,
+            )
+        except Exception as e:
+            logger.warning("Could not report log URL for run %s: %s", run.run_id, e)
 
     # -------------------------------------------------------------------------
     # Core RunLauncher interface
@@ -712,6 +774,7 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
                 run.run_id, {TAG_LAUNCHER_TYPE: LAUNCHER_TYPE_DEFAULT}
             )
             self._default_launcher.launch_run(context)
+            self._report_log_url(run, None)
             return
 
         host_info = self._get_docker_host(run)
@@ -749,7 +812,7 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
         # (absent explicit config) its networks from the code-location server.
         server_container = self._find_code_server_container(run, host_info)
         env_vars = self._build_env_vars(run, host_info, server_container)
-        labels = self._container_labels(run)
+        labels = self._container_labels(run, host_name)
 
         # Merge container kwargs: defaults < host-specific
         container_kwargs = {**self._default_container_kwargs}
@@ -833,6 +896,7 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
             run,
             cls=self.__class__,
         )
+        self._report_log_url(run, host_name)
 
     def _resolve_image(self, run: DagsterRun) -> Optional[str]:
         """Try to get the image from the code location's DAGSTER_CURRENT_IMAGE
