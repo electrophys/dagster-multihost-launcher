@@ -1,0 +1,150 @@
+// Grafana Alloy config for a Docker host running Dagster (Hosts A, B, C).
+//
+// Ships every container's output -- code-location servers, run containers,
+// and on Host A the webserver/daemon -- to Loki, tagged so a run's logs can be
+// found by run ID. This covers what never reaches the Dagster UI: print() in
+// sensors, run-worker startup errors, server/daemon logs, and step output lost
+// to a crash or to compute-log truncation.
+//
+// Requirements:
+//   - Mount /var/run/docker.sock and /var/lib/docker/containers read-only into
+//     Alloy's container (for rootless Docker, the latter is
+//     ~/.local/share/docker/containers).
+//   - Run containers must log with json-file and embed the launcher's labels:
+//     set default_container_kwargs.log_config in dagster.yaml (see there).
+//   - Set DAGSTER_HOST_NAME to this host's docker_hosts[].host_name in
+//     dagster.yaml (falls back to the machine hostname).
+//
+// Query a run's logs with: {host=~".+"} | dagster_run_id="<run id>"
+
+// --- Run containers: read from Docker's json-file logs ----------------------
+//
+// Not via the Docker API: loki.source.docker starts tailing a container ~10s
+// after it starts (target updates are batched), and only lists running
+// containers, so it misses any run that finishes sooner. A json-file log stays
+// on disk until the container is removed, and the launcher keeps exited run
+// containers until cleanup, so this is read in full however short the run.
+
+local.file_match "run_containers" {
+  path_targets = [{
+    "__path__"     = "/var/lib/docker/containers/*/*-json.log",
+    "host"         = coalesce(sys.env("DAGSTER_HOST_NAME"), constants.hostname),
+    "dagster_role" = "run",
+  }]
+}
+
+loki.source.file "run_containers" {
+  targets    = local.file_match.run_containers.targets
+  forward_to = [loki.process.run_containers.receiver]
+}
+
+loki.process "run_containers" {
+  // Each line: {"log": "...", "stream": "stdout", "time": "...", "attrs": {...}}
+  // where attrs holds the container's dagster/* labels (via labels-regex).
+  stage.json {
+    expressions = {
+      output           = "log",
+      stream           = "stream",
+      time             = "time",
+      dagster_managed  = "attrs.\"dagster/managed\"",
+      dagster_run_id   = "attrs.\"dagster/run_id\"",
+      dagster_job      = "attrs.\"dagster/job_name\"",
+      dagster_location = "attrs.\"dagster/location_name\"",
+    }
+  }
+
+  // The path matches every container's log; keep only Dagster run containers.
+  // (Others are collected by loki.source.docker below, with their names.)
+  stage.labels {
+    values = { dagster_managed = "" }
+  }
+  stage.match {
+    selector = "{dagster_managed!=\"true\"}"
+    action   = "drop"
+  }
+
+  stage.labels {
+    values = {
+      stream           = "",
+      dagster_job      = "",
+      dagster_location = "",
+    }
+  }
+  // Unique per run, so structured metadata rather than an index label.
+  stage.structured_metadata {
+    values = { dagster_run_id = "" }
+  }
+  stage.label_drop {
+    values = ["dagster_managed", "filename"]
+  }
+  stage.timestamp {
+    source = "time"
+    format = "RFC3339Nano"
+  }
+  // json-file keeps each line's trailing newline.
+  stage.template {
+    source   = "output"
+    template = "{{ TrimSuffix .Value \"\\n\" }}"
+  }
+  stage.output {
+    source = "output"
+  }
+
+  forward_to = [loki.write.default.receiver]
+}
+
+// --- Everything else: code servers, webserver, daemon, ... ------------------
+
+discovery.docker "containers" {
+  host = "unix:///var/run/docker.sock"
+  // A container is read from its start once discovered; this only bounds how
+  // long a newly started one waits (the default, 60s, misses brief ones).
+  refresh_interval = "10s"
+}
+
+discovery.relabel "containers" {
+  targets = []
+
+  // Run containers are read from their log files above.
+  rule {
+    source_labels = ["__meta_docker_container_label_dagster_managed"]
+    regex         = "true"
+    action        = "drop"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+  rule {
+    target_label = "host"
+    replacement  = coalesce(sys.env("DAGSTER_HOST_NAME"), constants.hostname)
+  }
+}
+
+loki.source.docker "containers" {
+  host          = "unix:///var/run/docker.sock"
+  targets       = discovery.docker.containers.targets
+  relabel_rules = discovery.relabel.containers.rules
+  forward_to    = [loki.process.services.receiver]
+}
+
+loki.process "services" {
+  // Dagster's console lines carry the run ID:
+  //   <time> - dagster - INFO - <job> - <run_id> - <pid> - <step> - ...
+  // which tags code-server and daemon lines that concern a particular run.
+  stage.regex {
+    expression = " - (?P<dagster_run_id>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}) - "
+  }
+  stage.structured_metadata {
+    values = { dagster_run_id = "" }
+  }
+
+  forward_to = [loki.write.default.receiver]
+}
+
+loki.write "default" {
+  endpoint {
+    url = "http://loki.example.internal:3100/loki/api/v1/push"
+  }
+}

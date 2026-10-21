@@ -1,0 +1,44 @@
+// Grafana Alloy config for a bare-process code location host (Host D).
+//
+// Runs from DefaultRunLauncher execute as subprocesses of the code server, so
+// their output -- and the server's own, including sensor print()s -- lands
+// wherever the server's stdout/stderr is redirected. integration_test/host_d
+// redirects it to C:\dagster-test\grpc.log; point __path__ at your equivalent.
+
+local.file_match "dagster" {
+  path_targets = [{
+    "__path__"         = "C:\\dagster-test\\grpc.log",
+    "host"             = "host-d",
+    "dagster_role"     = "code_server",
+    "dagster_location" = "bare_process_test_location",
+  }]
+}
+
+loki.source.file "dagster" {
+  targets    = local.file_match.dagster.targets
+  forward_to = [loki.process.dagster.receiver]
+  // Windows PowerShell 5.1's `*>` redirect writes UTF-16; PowerShell 7 writes
+  // UTF-8. Uncomment for the former.
+  // encoding = "UTF-16LE"
+}
+
+loki.process "dagster" {
+  // No container labels here: the run ID comes only from Dagster's console
+  // lines (<time> - dagster - INFO - <job> - <run_id> - ...). A step's raw
+  // print() output carries no run ID; read that from the Dagster UI's
+  // stdout/stderr view instead.
+  stage.regex {
+    expression = " - (?P<dagster_run_id>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}) - "
+  }
+  stage.structured_metadata {
+    values = { dagster_run_id = "" }
+  }
+
+  forward_to = [loki.write.default.receiver]
+}
+
+loki.write "default" {
+  endpoint {
+    url = "http://loki.example.internal:3100/loki/api/v1/push"
+  }
+}
