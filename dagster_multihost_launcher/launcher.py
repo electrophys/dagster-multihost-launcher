@@ -273,8 +273,9 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
                 default_value=None,
                 is_required=False,
                 description=(
-                    "Path (on the daemon host) to a .env file whose KEY=VALUE "
-                    "lines are injected into run containers for this host. "
+                    "Path on the Dagster daemon's host (Host A, not the remote "
+                    "Docker host) to a .env file whose KEY=VALUE lines are "
+                    "injected into run containers for this host. "
                     "Overrides default_env_file; overridden by env_vars."
                 ),
             ),
@@ -325,7 +326,8 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
                 default_value=None,
                 is_required=False,
                 description=(
-                    "Path (on the daemon host) to a .env file injected into ALL "
+                    "Path on the Dagster daemon's host (Host A, not the remote "
+                    "Docker host) to a .env file injected into ALL "
                     "Docker run containers. Lowest precedence; a central place for "
                     "env vars managed by an external tool (e.g. Komodo)."
                 ),

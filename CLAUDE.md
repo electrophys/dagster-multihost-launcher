@@ -102,6 +102,16 @@ highest precedence:
 4. `default_env_vars` + host `env_vars` — explicit `KEY=VALUE` / `KEY`
 5. Dagster-internal vars (`DAGSTER_RUN_JOB_NAME`, `DAGSTER_RUN_ID`) — always set
 
+Where each layer resolves matters on remote hosts: both `env_file`s are read
+from the **launching process's filesystem on Host A** (the Dagster daemon), not
+the remote host; a bare `KEY` copies Host A's value and is silently dropped if
+unset; inheritance reads the remote server's `Config.Env` (creation-time env
+incl. image `ENV`). The env is a snapshot at launch. Separately, `instance_ref`
+`{env: ...}` references (storage, compute_logs) are resolved *in the remote
+process*, so run containers, code servers and Host D all need e.g.
+`DAGSTER_POSTGRES_*` with values valid from there. README "Environment
+Variables on Remote Hosts" is the user-facing version.
+
 The `env_file` sources are designed to be rendered by an external config manager
 (e.g. Komodo Variables/Secrets), giving a single central source of env vars
 shared between the long-lived stacks and the ephemeral run containers.

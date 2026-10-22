@@ -115,8 +115,8 @@ run_launcher:
 | Key | Type | Description |
 |-----|------|-------------|
 | `docker_hosts` | list | Remote Docker host configurations |
-| `default_env_vars` | list[str] | Env vars passed to ALL run containers |
-| `default_env_file` | str | `.env` file (on the daemon host) injected into ALL run containers |
+| `default_env_vars` | list[str] | Env vars passed to ALL run containers: `KEY=VALUE`, or bare `KEY` to copy Host A's value |
+| `default_env_file` | str | `.env` file on Host A (read by the launcher) injected into ALL run containers |
 | `default_container_kwargs` | dict | Default `containers.create()` kwargs |
 | `log_url_template` | str | Link to each run's logs in an external viewer (e.g. Grafana), posted at launch. Placeholders: `{run_id}`, `{job_name}`, `{location}`, `{host_name}`, `{launch_ms}`. |
 | `container_label_prefix` | str | Label prefix (default: `dagster`) |
@@ -131,11 +131,63 @@ run_launcher:
 | `tls` | dict | no | TLS config (ca_cert, client_cert, client_key, verify) |
 | `network` | str | no | Docker network to attach run containers to. Leave this and `networks` unset to inherit the code server's networks; `"none"` for no networking. |
 | `networks` | list[str] | no | Multiple networks to attach to. Overrides inheritance. |
-| `env_vars` | list[str] | no | Host-specific env vars |
-| `env_file` | str | no | Host-specific `.env` file (on the daemon host) |
-| `inherit_env_from_container` | str | no | Overrides code-server env inheritance, which is **on by default** (the server is found by its published gRPC port). Give a container name — a `{location}` placeholder is supported — when the server doesn't publish its port, or `"off"` to disable inheritance. |
+| `env_vars` | list[str] | no | Host-specific env vars: `KEY=VALUE`, or bare `KEY` to copy Host A's value |
+| `env_file` | str | no | Host-specific `.env` file, also on **Host A** (not the remote host) |
+| `inherit_env_from_container` | str | no | Overrides code-server env inheritance, which is **on by default** (the server is found from the run's gRPC origin: by container name, else by published port). Give a container name — a `{location}` placeholder is supported — when the server doesn't publish its port, or `"off"` to disable inheritance. |
 | `container_kwargs` | dict | no | Host-specific `containers.create()` kwargs |
 | `registry` | dict | no | Registry credentials (url, username, password) |
+
+## Environment Variables on Remote Hosts
+
+Three kinds of process run on a remote host, and each gets its environment differently:
+
+| Process | Gets its env from |
+|---------|-------------------|
+| Code-location gRPC server (Host B/C container) | Its own stack (Compose, Komodo). The launcher never sets it. |
+| Run container (Host B/C) | The launcher, which builds it on Host A at launch time from the layers below |
+| Run on a bare-process host (Host D) | The code server process it runs in. None of the launcher's env settings apply. |
+
+### Run containers: where each value comes from
+
+The launcher builds a run container's environment in the process that launches runs: the Dagster daemon on Host A with the `QueuedRunCoordinator` (as in the example config), or the webserver without it. Layers, lowest precedence first:
+
+| # | Source | Resolved where | If missing |
+|---|--------|----------------|------------|
+| 1 | `default_env_file` | A file on **Host A**, read by the launcher | Warning logged, layer skipped |
+| 2 | host `env_file` | Also a file on **Host A**, even though it is per-host. Nothing is read from the remote host's disk. | Warning logged, layer skipped |
+| 3 | Code-server inheritance | The server container's `Config.Env` on the **remote** host, read over the Docker API. This is the env the container was created with, including its image's `ENV` lines, not anything the server process changes at runtime. | Warning logged, layer skipped |
+| 4 | `default_env_vars` + host `env_vars` | `KEY=VALUE` is used literally. A bare `KEY` copies **Host A's** value of `KEY` from the launching process. | A bare `KEY` that is unset on Host A is **silently omitted** |
+| 5 | `DAGSTER_RUN_JOB_NAME`, `DAGSTER_RUN_ID` | Set by the launcher | Always set |
+
+The result is a snapshot taken at launch and written into the container's config. Editing an env file or redeploying the code server affects the next run, not runs already going. A run that's re-executed is a new launch, so it gets current values.
+
+### Variables Dagster itself needs on the remote host
+
+Each run worker and code server receives Host A's instance config (the `instance_ref`) with its `{env: NAME}` references still **unresolved**. They are resolved in the remote process, so `storage`, and `compute_logs` if configured, need their variables set there:
+
+- **Run containers** need `DAGSTER_POSTGRES_*`, or whatever your `dagster.yaml` references, or the run fails at startup.
+- **Code servers** need them too: sensors, schedules and their `context.log` use the same instance config.
+- **Host D** needs them in its code server's environment (see `integration_test/host_d/start_grpc.ps1`).
+
+The values must work **from the remote host**. A common trap is `DAGSTER_POSTGRES_HOST`: on Host A it is often a Compose service name such as `postgres`. Listing it as a bare `KEY` in `env_vars` copies that name into a container on Host B, where it doesn't resolve ("could not translate host name"). Set it explicitly instead, as `DAGSTER_POSTGRES_HOST=<Host A's IP>` in `env_vars`, in an env file, or in the code server's own env so that inheritance passes it on.
+
+`DAGSTER_CURRENT_IMAGE` on the code server is not passed as env: the launcher uses it to choose the run container's image (see [Image Resolution](#image-resolution)).
+
+### Secrets
+
+Every value ends up in the run container's config, so anyone with access to that Docker daemon can read it with `docker inspect`. The env files sit on Host A in plain text. Keep secrets in a manager that renders the env files or the code server's env (e.g. Komodo Secrets), and limit who can reach the remote daemons. Their TLS client certificate effectively grants root.
+
+### Checking what a run got
+
+- **Control plane:** `dagster-multihost check-env` reports variables Host A is missing. That covers `{env: ...}` references and bare `KEY`s, which become silent omissions downstream.
+- **A run container:** inspect it on its host. The container ID is in the run's `multihost_docker/container_id` tag:
+
+  ```bash
+  docker -H tcp://<host>:2376 --tlsverify ... inspect <container_id> \
+    --format '{{range .Config.Env}}{{println .}}{{end}}'
+  ```
+
+- **Missing env files and failed inheritance** appear as warnings in the Dagster daemon's log on Host A, not in the run's event log.
 
 ## Deploying with Komodo
 
@@ -252,7 +304,7 @@ Run containers on remote hosts need to reach Postgres on Host A. Use Host A's re
 
 ### DefaultRunLauncher and instance_ref
 
-When `DefaultRunLauncher` sends a run to a remote gRPC server, it includes the daemon's `instance_ref` — the serialized storage config from `dagster.yaml`. If your storage config uses `env:` references (e.g., `env: DAGSTER_POSTGRES_HOST`), those env vars must also be set on the remote gRPC server's host. Use the same env var names but with values appropriate for that host (e.g., Host A's external IP instead of a Docker service name).
+When `DefaultRunLauncher` sends a run to a remote gRPC server, it includes Host A's `instance_ref`, whose `env:` references are resolved on the remote host. See [Variables Dagster itself needs on the remote host](#variables-dagster-itself-needs-on-the-remote-host).
 
 ### Run containers → other services
 
