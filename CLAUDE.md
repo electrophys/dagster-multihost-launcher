@@ -49,6 +49,15 @@ This allows mixing Docker and non-Docker code locations in the same Dagster inst
 - `integration_test/` — Working multi-host integration test across 3 physical machines
 - `loki/` — Alloy configs (Docker hosts, bare-process host) and a Grafana Loki data source for shipping Dagster logs to Loki keyed by run ID
 
+### Docker clients connect lazily
+
+Every process that loads the instance builds the launcher (webserver, daemon,
+admin job, CLI), so `__init__` must not touch Docker: each host's client is a
+`_LazyDockerClient` that connects on first attribute access (failures aren't
+cached, so the next use retries). Connecting eagerly made one unreachable host,
+or a webserver without the local socket, break the launcher everywhere. Callers
+already catch errors per host (launch, terminate, health check, cleanup).
+
 ### Run Tags
 
 The launcher tags Docker runs with:

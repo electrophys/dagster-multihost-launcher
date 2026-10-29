@@ -12,6 +12,7 @@ Typical setup:
 
 import logging
 import re
+import threading
 import time
 import os
 from typing import Any, Dict, List, Optional
@@ -83,6 +84,39 @@ _IMAGE_REFERENCE_RE = re.compile(
 )
 
 
+class _LazyDockerClient:
+    """A Docker client that connects on first use.
+
+    docker-py contacts the daemon when a client is created, and every process
+    that loads the instance config builds the launcher: the webserver, the
+    daemon, the admin job, the CLI. Connecting up front made all of them need
+    every Docker host reachable, so one host down (or one missing socket or
+    cert) broke the launcher everywhere, including runs for healthy hosts and
+    DefaultRunLauncher runs. Connecting on first use confines a failure to the
+    operations on that host, each of which already handles errors. A failed
+    connection is not cached, so the next use retries.
+    """
+
+    def __init__(self, factory: Any, host_name: str):
+        self._factory = factory
+        self._host_name = host_name
+        self._client: Optional[docker.DockerClient] = None
+        self._lock = threading.Lock()
+
+    def _get(self) -> docker.DockerClient:
+        with self._lock:
+            if self._client is None:
+                self._client = self._factory()
+            return self._client
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._get(), name)
+
+    def __repr__(self) -> str:
+        state = "connected" if self._client is not None else "not connected"
+        return f"<_LazyDockerClient host={self._host_name!r} {state}>"
+
+
 class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
     """A composite run launcher that routes runs to remote Docker daemons
     or falls back to the DefaultRunLauncher, based on code location name.
@@ -116,8 +150,10 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
         self._docker_clients: Dict[str, docker.DockerClient] = {}
 
         for host_cfg in docker_hosts or []:
-            client = self._build_docker_client(host_cfg)
             host_name = host_cfg["host_name"]
+            client = _LazyDockerClient(
+                lambda cfg=host_cfg: self._build_docker_client(cfg), host_name
+            )
             self._docker_clients[host_name] = client
 
             for loc in host_cfg["location_names"]:
@@ -150,7 +186,13 @@ class MultiHostDockerRunLauncher(RunLauncher, ConfigurableClass):
         docker_url = host_cfg.get("docker_url")
 
         if not docker_url:
-            return docker.from_env()
+            try:
+                return docker.from_env()
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to create Docker client for host "
+                    f"'{host_cfg.get('host_name')}' (local Docker daemon): {e}"
+                )
 
         kwargs: Dict[str, Any] = {"base_url": docker_url}
 
