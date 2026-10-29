@@ -260,6 +260,18 @@ Run containers join the code-location server's own networks by default, so they 
 
 Set `network` (or `networks`) on the host to override that — but note that Docker Compose prefixes network names with the project name, so an explicit value must either match a `name:` you set in the compose network definition or use the full prefixed name. Inheritance sidesteps that mismatch, which is the usual cause of a run container coming up unable to resolve Postgres. Use `network: "none"` for a run container with no networking.
 
+### Which processes need Docker access
+
+The launcher connects to each Docker host only when an operation needs it, so the webserver, daemon and CLI all load the instance fine even if a host is down, or the process can't reach it. Each operation still needs its host to be reachable from the process that runs it:
+
+| Process | Uses Docker for | Needs |
+|---------|-----------------|-------|
+| Dagster daemon | Launching runs, run health checks | Every host: the local socket for `host-a`, TLS certs for remote hosts |
+| Webserver | **Terminate** button in the UI | The same, if you want to terminate Docker runs from the UI. Otherwise terminating fails with an error event on the run. |
+| Admin job / `dagster-multihost cleanup` | Status and cleanup | Every host it manages |
+
+If a host is unreachable, only operations on that host fail. Runs for other hosts and `DefaultRunLauncher` runs carry on.
+
 ### Code location gRPC → Host A
 
 The gRPC servers on remote hosts need their ports accessible from Host A (for the webserver and daemon to load definitions).
